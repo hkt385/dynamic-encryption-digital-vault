@@ -1,0 +1,15 @@
+FROM node:20-slim AS build
+WORKDIR /app
+COPY frontend/package.json ./
+RUN npm install
+COPY frontend/ ./
+# Injected at image-build time; the API audience/issuer are public values
+# (they identify endpoints, not secrets) safe to bake into a static bundle.
+ARG VITE_OIDC_ISSUER
+ARG VITE_OIDC_CLIENT_ID
+ARG VITE_OIDC_AUDIENCE
+ARG VITE_API_BASE_URL=/api
+RUN npm run build
+
+FROM caddy:2-alpine
+COPY --from=build /app/dist /srv/frontend

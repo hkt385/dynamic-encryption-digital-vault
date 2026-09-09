@@ -1,0 +1,64 @@
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vault_test
+          POSTGRES_USER: postgres
+          # Test-only ephemeral database, bound to loopback below.
+          # Never use trust authentication for deployed databases.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vault_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_ADMIN_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/vault_test
+      TEST_DATABASE_URL: postgresql://vault_runtime@127.0.0.1:5432/vault_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Resolve/install dependencies
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --locked --extra test
+          else
+            uv sync --extra test
+          fi
+      - name: Migrate database
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          psql "$TEST_ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -f migrations/001_schema.sql
+          psql "$TEST_ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -f migrations/002_roles.sql
+          psql "$TEST_ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -f migrations/003_file_lifecycle.sql
+      - name: Static checks
+        run: |
+          uv run ruff check vault tests
+          uv run mypy vault
+      - name: Tests
+        run: uv run pytest -q
+      - name: Dependency audit
+        run: |
+          uv export --no-dev --no-emit-project --format requirements-txt \
+            --output-file /tmp/vault-requirements.txt
+          uv run pip-audit -r /tmp/vault-requirements.txt
+      - name: Preserve resolved lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-lock
+          path: uv.lock

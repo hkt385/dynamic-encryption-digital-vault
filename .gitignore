@@ -22,3 +22,19 @@ decrypted.txt
 # Local-only tooling, not part of the project, never pushed
 /explabs-tool/
 /md docs/
+
+# Vault runtime artifacts
+encrypted-files/
+*.vault
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+#env example
+.env.example

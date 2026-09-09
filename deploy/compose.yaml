@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: vault
+      POSTGRES_USER: vault_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault_owner -d vault"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      VAULT_ROOT: /encrypted
+      VAULT_KEK_SOURCE: env
+      VAULT_KEKS_JSON: ${VAULT_KEKS_JSON:?Set VAULT_KEKS_JSON}
+      VAULT_ACTIVE_KEK: ${VAULT_ACTIVE_KEK:?Set VAULT_ACTIVE_KEK}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:?Set OIDC_JWKS_URL}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:?Set OIDC_AUDIENCE}
+    volumes:
+      - encrypted:/encrypted
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks: [internal]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        VITE_OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER}
+        VITE_OIDC_CLIENT_ID: ${OIDC_FRONTEND_CLIENT_ID:?Set OIDC_FRONTEND_CLIENT_ID}
+        VITE_OIDC_AUDIENCE: ${OIDC_AUDIENCE:?Set OIDC_AUDIENCE}
+        VITE_API_BASE_URL: /api
+    environment:
+      CADDY_EMAIL: ${CADDY_EMAIL:?Set CADDY_EMAIL}
+      VAULT_DOMAIN: ${VAULT_DOMAIN:?Set VAULT_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+    volumes:
+      - caddy_data:/data
+    networks: [internal]
+
+  # Run on a schedule (host cron, systemd timer, or an orchestrator's
+  # CronJob) -- it is intentionally not a long-running service.
+  #
+  #   docker compose run --rm lifecycle-worker
+  lifecycle-worker:
+    profiles: ["maintenance"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    entrypoint: ["python", "-m", "vault.lifecycle_worker"]
+    environment:
+      ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:?Set ADMIN_DATABASE_URL}
+      VAULT_ROOT: /encrypted
+    volumes:
+      - encrypted:/encrypted
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  pgdata:
+  encrypted:
+  caddy_data:

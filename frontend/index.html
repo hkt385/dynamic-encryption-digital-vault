@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dynamic Vault</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!--
+    Runtime configuration (set at build time via Vite env vars, or override
+    at deploy time by having Caddy serve a generated /config.js before this
+    bundle loads):
+      VITE_OIDC_ISSUER    - e.g. https://your-provider.example/your-issuer
+      VITE_OIDC_CLIENT_ID - the frontend's OIDC client id (NOT the API audience)
+      VITE_OIDC_AUDIENCE  - dynamic-vault-api (must match OIDC_AUDIENCE on the API)
+      VITE_API_BASE_URL   - e.g. https://vault.example.com/api
+
+    Access tokens are kept only in memory (a module-level variable in
+    src/main.js) and are never written to localStorage/sessionStorage/cookies,
+    per the product's "browser credentials kept in memory" scope decision.
+    Refreshing the page requires signing in again.
+  -->
+  <div id="app">
+    <header>
+      <h1>Dynamic Vault</h1>
+      <div id="auth-area"></div>
+    </header>
+    <main id="content" hidden>
+      <section id="usage-panel"></section>
+      <section id="upload-panel">
+        <h2>Upload</h2>
+        <input type="file" id="file-input" />
+        <button id="upload-button">Upload</button>
+        <p id="upload-status" role="status"></p>
+      </section>
+      <section id="documents-panel">
+        <div class="tabs">
+          <button id="tab-active" class="tab active">Files</button>
+          <button id="tab-trash" class="tab">Trash</button>
+        </div>
+        <table id="documents-table">
+          <thead>
+            <tr><th>Name</th><th>Size</th><th>Created</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="documents-body"></tbody>
+        </table>
+      </section>
+    </main>
+    <dialog id="share-dialog">
+      <form method="dialog" id="share-form">
+        <h2>Share document</h2>
+        <label>Recipient user ID<input type="text" id="share-recipient" required /></label>
+        <label>Expires in (hours)<input type="number" id="share-hours" value="24" min="1" max="168" required /></label>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button value="confirm" id="share-confirm">Create link</button>
+        </menu>
+      </form>
+      <div id="share-result" hidden>
+        <p>Share this token with the recipient once — it will not be shown again.</p>
+        <code id="share-token"></code>
+        <button id="share-close">Done</button>
+      </div>
+    </dialog>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

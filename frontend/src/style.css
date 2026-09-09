@@ -1,0 +1,102 @@
+:root {
+  color-scheme: light dark;
+  --border: #d8dee4;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --danger: #b91c1c;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 0 1.5rem 3rem;
+  max-width: 960px;
+  margin-inline: auto;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: white;
+  border-radius: 6px;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.9rem;
+}
+
+button.secondary {
+  background: transparent;
+  color: inherit;
+}
+
+button.danger {
+  background: var(--danger);
+}
+
+section {
+  margin-top: 1.5rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 0.4rem 0.2rem;
+}
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+#usage-panel {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+code {
+  display: block;
+  word-break: break-all;
+  background: rgba(127, 127, 127, 0.12);
+  padding: 0.6rem;
+  border-radius: 6px;
+  margin: 0.75rem 0;
+}

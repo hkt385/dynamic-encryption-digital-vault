@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: vault
+      POSTGRES_USER: vault_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault_owner -d vault"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    profiles: ["api"]
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DATABASE_URL: ${CONTAINER_DATABASE_URL:?Set CONTAINER_DATABASE_URL}
+      VAULT_ROOT: /encrypted
+      VAULT_KEK_SOURCE: env
+      VAULT_KEKS_JSON: ${VAULT_KEKS_JSON:?Set VAULT_KEKS_JSON}
+      VAULT_ACTIVE_KEK: ${VAULT_ACTIVE_KEK:?Set VAULT_ACTIVE_KEK}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:?Set OIDC_JWKS_URL}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:?Set OIDC_AUDIENCE}
+      VAULT_DOCS: "1"
+    volumes:
+      - encrypted:/encrypted
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  pgdata:
+  encrypted:

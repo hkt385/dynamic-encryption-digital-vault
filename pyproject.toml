@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamic-encryption-digital-vault"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=46",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "psycopg[binary]>=3.2",
+    "PyJWT[crypto]>=2.10",
+    "keyring>=25",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "httpx>=0.28",
+    "ruff>=0.11",
+    "mypy>=1.15",
+    "pip-audit>=2.9",
+]
+
+[tool.setuptools.packages.find]
+include = ["vault*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"
+markers = [
+    "integration: requires PostgreSQL",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true

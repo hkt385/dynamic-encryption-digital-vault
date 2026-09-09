@@ -1,0 +1,28 @@
+{
+	# Set CADDY_EMAIL so Let's Encrypt can reach you about certificate issues.
+	email {$CADDY_EMAIL}
+}
+
+{$VAULT_DOMAIN} {
+	encode zstd gzip
+
+	@api path /api/* /health /ready
+	handle @api {
+		uri strip_prefix /api
+		reverse_proxy api:8000 {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options "DENY"
+	}
+}
