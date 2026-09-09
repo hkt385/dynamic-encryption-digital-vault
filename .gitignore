@@ -21,3 +21,4 @@ decrypted.txt
 
 # Local-only tooling, not part of the project, never pushed
 /explabs-tool/
+/md docs/
