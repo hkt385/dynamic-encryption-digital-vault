@@ -21,3 +21,6 @@ decrypted.txt
 
 __pycache__/
 *.pyc
+build/
+dist/
+installer/
