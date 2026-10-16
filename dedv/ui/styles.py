@@ -10,8 +10,11 @@ ACCENT_HOVER = "#74aee0"
 # Subtle security-level tints (text colour only)
 LEVEL_COLORS = {
     "Unassigned": "#8a9099",
+    "Low": "#8fb8c9",
     "Standard": "#7fb77e",
     "Enhanced": "#d6b25e",
+    "High": "#d9976f",
+    "Critical": "#d9776f",
     "High/Critical": "#d9776f",
 }
 
@@ -26,6 +29,8 @@ QLabel#brand {{ font-size: 15pt; font-weight: 700; color: {ACCENT}; }}
 
 QFrame#sidebar {{ background: {SIDEBAR}; border-right: 1px solid {BORDER}; }}
 QFrame#topbar {{ background: {BG}; border-bottom: 1px solid {BORDER}; }}
+QFrame#paramBar {{ background: {SIDEBAR}; border-bottom: 1px solid {BORDER}; }}
+QFrame#paramBar QComboBox {{ padding: 4px 8px; }}
 
 QPushButton#nav {{
     background: transparent; border: none; border-radius: 6px;

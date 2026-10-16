@@ -5,8 +5,13 @@ from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainW
                                QMessageBox, QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from config.config_manager import ConfigManager
+from services.security_decision_service import SecurityDecisionEngine
 from services.storage_service import StorageError, create_vault
 from services.vault_service import VaultService
+from services.viewer_service import TempFiles
+from ui.developer_page import DeveloperPage
+from ui.edit_page import EditPage
+from ui.loading_overlay import LoadingOverlay, TaskRunner
 from ui.settings_page import SettingsPage
 from ui.upload_page import UploadPage
 from ui.view_page import ViewPage
@@ -37,18 +42,32 @@ class MainWindow(QMainWindow):
         sl.addWidget(brand)
         sl.addSpacing(18)
 
+        # Prediction engine (model loaded once) and the shared "Encrypting" overlay/runner.
+        self.engine = SecurityDecisionEngine()
+        self.overlay = LoadingOverlay(self)
+        self.runner = TaskRunner(self.overlay)
+        self.temp_files = TempFiles()
+        self.temp_files.sweep_stale()          # plaintext copies left by an earlier run
+
         # Pages
-        self.view_page = ViewPage(lambda: self.vault)
-        self.upload_page = UploadPage(lambda: self.vault, lambda: self.config.get("account_type"))
+        self.view_page = ViewPage(lambda: self.vault, self.temp_files)
+        self.upload_page = UploadPage(lambda: self.vault, config, self.engine, self.runner)
+        self.edit_page = EditPage(lambda: self.vault, lambda: self.config.get("account_type"), self.runner)
         self.settings_page = SettingsPage(config, self.change_directory)
+        self.developer_page = DeveloperPage()
         self.upload_page.stored.connect(self.view_page.refresh)
+        self.upload_page.stored.connect(self.edit_page.refresh)
+        self.edit_page.changed.connect(self.view_page.refresh)
         self.settings_page.changed.connect(self._update_topbar)
+        self.settings_page.changed.connect(self.upload_page.invalidate)
+        self.settings_page.changed.connect(self.edit_page.refresh)
         self.stack = QStackedWidget()
 
         group = QButtonGroup(self)
         group.setExclusive(True)
         for i, (label, page) in enumerate((("View", self.view_page), ("Upload", self.upload_page),
-                                           ("Settings", self.settings_page))):
+                                           ("Edit", self.edit_page), ("Settings", self.settings_page),
+                                           ("Developer", self.developer_page))):
             self.stack.addWidget(page)
             b = QPushButton(label)
             b.setObjectName("nav")
@@ -102,6 +121,7 @@ class MainWindow(QMainWindow):
                                 f"{e}\n\nYou can pick a different location in Settings.")
         self._update_topbar()
         self.view_page.refresh()
+        self.edit_page.refresh()
         self.settings_page.refresh()
 
     def change_directory(self, parent: Path):
@@ -117,7 +137,13 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         if index == 0:
             self.view_page.refresh()
+        elif index == 2:
+            self.edit_page.refresh()
 
     def closeEvent(self, e):
+        if self.runner.busy:                  # never abandon a half-finished encryption
+            e.ignore()
+            return
+        self.temp_files.cleanup()
         self._settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(e)

@@ -4,6 +4,7 @@ The UI talks to `VaultRepository`; `JsonVaultRepository` is the first-version
 implementation and can be swapped for a SQLite one later.
 """
 import json
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -43,10 +44,15 @@ class VaultRepository(ABC):
     @abstractmethod
     def get_file(self, file_id: str) -> FileMetadata | None: ...
 
+    @abstractmethod
+    def update_file(self, meta: FileMetadata) -> None:
+        """Replace the entry with the same file_id, atomically."""
+
 
 class JsonVaultRepository(VaultRepository):
     def __init__(self, vault_dir: Path):
         self.index = Path(vault_dir) / "metadata" / "files.json"
+        self._lock = threading.RLock()      # serialises read-modify-write within this process
 
     def _read(self) -> list[FileMetadata]:
         if not self.index.is_file():
@@ -69,9 +75,21 @@ class JsonVaultRepository(VaultRepository):
         return self._read()
 
     def add_file(self, meta: FileMetadata) -> None:
-        items = self._read()
-        items.append(meta)
-        self._write(items)
+        with self._lock:
+            items = self._read()
+            items.append(meta)
+            self._write(items)
+
+    def update_file(self, meta: FileMetadata) -> None:
+        with self._lock:
+            items = self._read()
+            for i, m in enumerate(items):
+                if m.file_id == meta.file_id:
+                    items[i] = meta
+                    break
+            else:
+                raise StorageError("The file is no longer in the vault.")
+            self._write(items)
 
     def get_file(self, file_id: str) -> FileMetadata | None:
         return next((m for m in self._read() if m.file_id == file_id), None)

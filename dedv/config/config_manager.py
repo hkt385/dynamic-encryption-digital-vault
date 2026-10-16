@@ -55,6 +55,11 @@ class ConfigManager:
     def get(self, key: str, default=""):
         return self.data.get(key, default)
 
+    def get_model_parameters(self) -> dict:
+        """Saved dropdown selections (non-sensitive). Callers validate them against the model."""
+        v = self.data.get("model_parameters")
+        return v if isinstance(v, dict) else {}
+
     def update(self, **values) -> None:
         self.data.update(values)
         self.save()

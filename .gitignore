@@ -24,3 +24,11 @@ __pycache__/
 build/
 dist/
 installer/
+
+# DEDV development keys and per-vault key stores (secrets - never commit)
+DEDV_key.txt
+*_key.txt
+keys/
+wrapped_keys.json
+dev_keys.json
+settings.json
