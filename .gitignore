@@ -24,6 +24,7 @@ __pycache__/
 build/
 dist/
 installer/
+docs/CLAUDE_CONTEXT.md
 
 # DEDV development keys and per-vault key stores (secrets - never commit)
 DEDV_key.txt
