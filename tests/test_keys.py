@@ -1,102 +1,104 @@
 import base64
 import os
-import subprocess
 
 import pytest
 
-from conftest import db_bytes
-from paths import key_dir
-from services.key_management_service import (KEK_ID, KEY_FILE_NAME, DevKeyFile, KeyManagementService,
-                                             KeyStoreError)
+from conftest import db_bytes, new_vault
+from services.key_management_service import KeyStoreError
+
+SECRETS = {"key": os.urandom(32)}
+PARAMS = {"wrapped_key": "abc"}
 
 
-def test_key_generated_once_and_reused(tmp_path):
-    vault = tmp_path / "vault"
-    km = KeyManagementService(vault)
-    assert "not created" in km.key_status()
-    km.store_secrets("f1", {"key": b"A" * 32})
-    path = key_dir() / KEY_FILE_NAME
-    first = path.read_text()
-    # "restart": new service instance, same folder
-    km2 = KeyManagementService(vault)
-    assert km2.get_secrets("f1") == {"key": b"A" * 32}
-    km2.store_secrets("f2", {"key": b"B" * 32})
-    assert path.read_text() == first                      # not regenerated
-    assert "present and valid" in km2.key_status()
+@pytest.fixture
+def vault(tmp_path):
+    return new_vault(tmp_path / "DEDV")
 
 
-def test_key_file_format_and_not_literal_name(tmp_path):
-    KeyManagementService(tmp_path).store_secrets("f1", {"k": b"x"})
-    text = (key_dir() / KEY_FILE_NAME).read_text()
-    assert f"key_id: {KEK_ID}" in text
-    key = base64.b64decode(next(l for l in text.splitlines() if l.startswith("key:")).split(":", 1)[1].strip())
-    assert len(key) == 32 and key != b"DEDV" * 8 and KEK_ID.encode() not in key
+def store(vault, file_id="f1", algorithm="AES-256-GCM", level="Standard", secrets=SECRETS):
+    return vault.keys.store_key(file_id, algorithm, level, secrets, PARAMS, vault.session)
 
 
-def test_secrets_are_not_stored_in_clear(tmp_path):
-    km = KeyManagementService(tmp_path)
-    secret = os.urandom(32)
-    km.store_secrets("f1", {"key": secret})
-    stored = db_bytes(tmp_path)
-    assert stored and secret not in stored
-    assert base64.b64encode(secret) not in stored and secret.hex().encode() not in stored
-    assert str(key_dir()) not in str(tmp_path)           # key file is outside the vault
+def audit(vault):
+    return [(r["action"], r["result"], r["file_id"]) for r in vault.audit.entries()]
 
 
-@pytest.mark.skipif(os.name != "nt", reason="icacls check is Windows specific")
-def test_key_file_acl_is_restricted_to_owner(tmp_path):
-    km = KeyManagementService(tmp_path)
-    km.store_secrets("f1", {"k": b"x"})
-    assert km.key_file.permissions_restricted
-    out = subprocess.run(["icacls", str(km.key_file.path)], capture_output=True, text=True).stdout
-    principals = [l for l in out.splitlines() if ":(" in l]
-    assert len(principals) == 1 and os.environ["USERNAME"].lower() in principals[0].lower()
+def test_token_is_opaque_and_releases_the_record(vault):
+    token, other = store(vault), store(vault, "f2")
+    assert token != other and len(token) == 22 and "f1" not in token      # 128 random bits, URL-safe
+    assert len(base64.urlsafe_b64decode(token + "==")) == 16
+    key = vault.keys.release_key(token, "f1", vault.session)
+    assert (key.algorithm, key.level, key.secrets, key.params) == ("AES-256-GCM", "Standard", SECRETS, PARAMS)
+    assert audit(vault)[-1] == ("key_release", "OK", "f1")
 
 
-@pytest.mark.parametrize("body", [
-    "garbage",
-    "key_id: OTHER\nkey: " + base64.b64encode(b"x" * 32).decode(),
-    "key_id: DEDV\nkey: " + base64.b64encode(b"short").decode(),
-    "key_id: DEDV\nkey: !!!notbase64!!!",
-])
-def test_malformed_key_is_reported_and_never_replaced(tmp_path, body):
-    d = key_dir()
-    d.mkdir(parents=True)
-    (d / KEY_FILE_NAME).write_text(body)
-    km = KeyManagementService(tmp_path)
-    with pytest.raises(KeyStoreError, match="malformed"):
-        km.store_secrets("f1", {"k": b"x"})
-    assert (d / KEY_FILE_NAME).read_text() == body        # untouched
+def test_key_material_is_not_stored_in_clear(vault):
+    store(vault)
+    stored = db_bytes(vault.vault_dir)
+    for secret in (SECRETS["key"], vault.session.vmk()):
+        assert secret not in stored and base64.b64encode(secret) not in stored
+        assert secret.hex().encode() not in stored
 
 
-def test_create_refuses_to_overwrite(tmp_path):
-    kf = DevKeyFile(tmp_path)
-    kf.create()
-    with pytest.raises(KeyStoreError, match="Refusing"):
-        kf.create()
+def test_release_is_refused_while_locked_and_logged(vault):
+    token = store(vault)
+    vault.session.lock()
+    with pytest.raises(KeyStoreError, match="locked"):
+        vault.keys.release_key(token, "f1", vault.session)
+    assert audit(vault)[-1] == ("key_release", "DENIED", "f1")
+    vault.session.unlock("correct horse battery")
+    assert vault.keys.release_key(token, "f1", vault.session).secrets == SECRETS
 
 
-def test_lost_key_is_not_silently_replaced(tmp_path):
-    km = KeyManagementService(tmp_path)
-    km.store_secrets("f1", {"k": b"x"})
-    (key_dir() / KEY_FILE_NAME).unlink()
-    km2 = KeyManagementService(tmp_path)
-    with pytest.raises(KeyStoreError, match="missing"):
-        km2.get_secrets("f1")
-    with pytest.raises(KeyStoreError, match="Restore"):
-        km2.store_secrets("f2", {"k": b"y"})
-    assert not (key_dir() / KEY_FILE_NAME).exists()
+def test_unknown_token_and_wrong_file_are_refused_and_logged(vault):
+    token = store(vault)
+    with pytest.raises(KeyStoreError, match="No key is stored"):
+        vault.keys.release_key("no-such-token", "f1", vault.session)
+    assert audit(vault)[-1] == ("key_release", "DENIED", "f1")
+    with pytest.raises(KeyStoreError, match="different file"):       # a valid token, but not this file's
+        vault.keys.release_key(token, "f2", vault.session)
+    assert audit(vault)[-1] == ("key_release", "DENIED", "f2")
 
 
-def test_wrong_key_cannot_unwrap(tmp_path):
-    KeyManagementService(tmp_path).store_secrets("f1", {"k": b"x"})
-    (key_dir() / KEY_FILE_NAME).unlink()
-    DevKeyFile().create()                                  # a different DEDV key
-    with pytest.raises(KeyStoreError, match="unwrapped"):
-        KeyManagementService(tmp_path).get_secrets("f1")
+def test_record_swapped_onto_another_file_is_detected(vault):
+    """Someone with write access to keys.db points file f2's token at file f1's sealed record."""
+    t1, t2 = store(vault, "f1"), store(vault, "f2", secrets={"key": os.urandom(32)})
+    with vault.db as conn:
+        ct1 = conn.execute("SELECT nonce, ct FROM keys.wrapped_keys WHERE token=?", (t1,)).fetchone()
+        conn.execute("UPDATE keys.wrapped_keys SET nonce=?, ct=? WHERE token=?", (ct1["nonce"], ct1["ct"], t2))
+    with pytest.raises(KeyStoreError, match="could not be unwrapped"):
+        vault.keys.release_key(t2, "f2", vault.session)
+    assert audit(vault)[-1] == ("key_release", "DENIED", "f2")
+    # Re-labelling a record's owner is caught the same way (file_id is part of the seal).
+    with vault.db as conn:
+        conn.execute("UPDATE keys.wrapped_keys SET file_id='f2' WHERE token=?", (t1,))
+    with pytest.raises(KeyStoreError, match="could not be unwrapped"):
+        vault.keys.release_key(t1, "f2", vault.session)
 
 
-def test_key_dir_is_outside_install_and_vault(tmp_path):
-    # default location is under LOCALAPPDATA, never the app/vault
-    os.environ.pop("DEDV_KEY_DIR")
-    assert "DEDV" in str(key_dir()) and key_dir().name == "keys"
+@pytest.mark.parametrize("column,value", [("algorithm", "AES-128-GCM"), ("level", "Low")])
+def test_changing_the_recorded_algorithm_or_level_is_detected(vault, column, value):
+    token = store(vault)
+    with vault.db as conn:
+        conn.execute(f"UPDATE keys.wrapped_keys SET {column}=? WHERE token=?", (value, token))
+    with pytest.raises(KeyStoreError, match="could not be unwrapped"):
+        vault.keys.release_key(token, "f1", vault.session)
+
+
+def test_record_from_another_vault_cannot_be_unwrapped(vault, tmp_path):
+    (tmp_path / "other").mkdir()
+    other = new_vault(tmp_path / "other" / "DEDV", "a different password")
+    token = store(other)
+    with other.db as conn:
+        row = tuple(conn.execute("SELECT * FROM keys.wrapped_keys WHERE token=?", (token,)).fetchone())
+    with vault.db as conn:
+        conn.execute("INSERT INTO keys.wrapped_keys VALUES (?, ?, ?, ?, ?, ?)", row)
+    with pytest.raises(KeyStoreError, match="could not be unwrapped"):
+        vault.keys.release_key(token, "f1", vault.session)
+
+
+def test_deleted_record_is_gone(vault):
+    token = store(vault)
+    vault.keys.delete(token)
+    with pytest.raises(KeyStoreError, match="No key is stored"):
+        vault.keys.release_key(token, "f1", vault.session)

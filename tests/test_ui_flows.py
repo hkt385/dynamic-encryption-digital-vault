@@ -7,7 +7,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QWidget
 
 from config.config_manager import ConfigManager
-from conftest import wait_until
+from conftest import PASSWORD, new_vault, wait_until
 from services.security_decision_service import FINAL, SecurityDecision
 from ui.edit_page import EditPage, levels_for
 from ui.file_viewer import FileViewerDialog
@@ -103,7 +103,7 @@ def _upload_setup(qapp, model, tmp_path, host, level, params, account="Enterpris
     win, overlay, runner = host
     cfg = ConfigManager(tmp_path / "s.json")
     cfg.update(account_type=account, model_parameters=params)
-    vault = VaultService(tmp_path / "DEDV")
+    vault = new_vault(tmp_path / "DEDV")
     page = UploadPage(lambda: vault, cfg, SecurityDecisionEngine(model), runner)
     src = tmp_path / "doc.txt"
     src.write_bytes(CONTENT)
@@ -183,7 +183,7 @@ def test_dropdowns_exist_only_on_upload_page_and_persist(qapp, tmp_path, model):
     cfg = ConfigManager(tmp_path / "settings.json")
     cfg.update(username="u", account_type="Enterprise", default_directory=str(tmp_path),
                vault_directory=str(tmp_path / "DEDV"))
-    win = MainWindow(cfg)
+    win = MainWindow(cfg, new_vault(tmp_path / "DEDV"))
     bars = win.findChildren(ParameterBar)
     assert len(bars) == 1 and win.upload_page.isAncestorOf(bars[0])
     for page in (win.view_page, win.edit_page, win.settings_page, win.developer_page):
@@ -199,7 +199,8 @@ def test_dropdowns_exist_only_on_upload_page_and_persist(qapp, tmp_path, model):
     assert bar.values()["Sensitivity"] == "Very High"
     cfg2 = ConfigManager(tmp_path / "settings.json")
     assert cfg2.load()
-    win2 = MainWindow(cfg2)
+    win.close()                                                 # "restart"
+    win2 = MainWindow(cfg2, None)
     assert win2.upload_page.param_bar.values()["Sensitivity"] == "Very High"
     assert [win.stack.widget(i) for i in range(win.stack.count())] == [
         win.view_page, win.upload_page, win.edit_page, win.settings_page, win.developer_page]
@@ -207,7 +208,7 @@ def test_dropdowns_exist_only_on_upload_page_and_persist(qapp, tmp_path, model):
 
 # ---- view page: double-click open ----------------------------------------------------------------------
 def _stored_vault(tmp_path, name, content, level="Standard"):
-    vault = VaultService(tmp_path / "DEDV")
+    vault = new_vault(tmp_path / "DEDV")
     src = tmp_path / name
     src.write_bytes(content)
     d = SecurityDecision(FINAL, "Enterprise", predicted=level, level=level)

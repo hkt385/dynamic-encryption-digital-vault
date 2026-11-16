@@ -15,7 +15,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from paths import temp_view_dir
+from paths import restrict_permissions, temp_view_dir
 
 TEXT_EXT = {".txt", ".md", ".log", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg",
             ".conf", ".toml", ".html", ".htm", ".css", ".py", ".js", ".ts", ".java", ".c", ".h",
@@ -62,11 +62,7 @@ class TempFiles:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        if os.name != "nt":
-            os.chmod(d, 0o700)
-        else:
-            from services.key_management_service import _restrict_permissions
-            _restrict_permissions(d)
+        restrict_permissions(d)
         return path
 
     def cleanup(self) -> list[Path]:

@@ -1,7 +1,7 @@
 """Vault folder layout, the two SQLite databases, the cross-process lock and the metadata repository.
 
-  <vault>/metadata/vault.db   file metadata (and, later, the audit log)
-  <vault>/config/keys.db      wrapped keys
+  <vault>/metadata/vault.db   file metadata and the audit log
+  <vault>/config/keys.db      wrapped Vault Master Key and wrapped per-file key records
 
 They are two physical files so key material is stored apart from document metadata, but they
 are opened as one connection (keys.db is ATTACHed as `keys`), so a change that touches both is
@@ -9,7 +9,6 @@ one transaction. In WAL mode SQLite does not guarantee that such a transaction i
 both files if the machine loses power mid-commit; writers therefore insert the key row before the
 row that refers to it, so the worst case is an unreferenced key, never a file without its key.
 """
-import json
 import os
 import sqlite3
 import threading
@@ -26,16 +25,31 @@ KEYS_DB = Path("config") / "keys.db"
 # Schema steps, applied in order and recorded in schema_version. Never edit a shipped step:
 # add a new (version, statements) entry instead.
 MIGRATIONS = [
-    (1, [
+    (1, [   # DEDV 0.2.0
+        # vault.db: one row per stored file. `token` refers to the key record in keys.db; no key
+        # material is stored here.
         """CREATE TABLE IF NOT EXISTS files (
                file_id TEXT PRIMARY KEY, original_name TEXT NOT NULL, file_type TEXT NOT NULL,
                size_bytes INTEGER NOT NULL, date_added TEXT NOT NULL, security_level TEXT NOT NULL,
                encrypted_name TEXT NOT NULL, predicted_level TEXT NOT NULL DEFAULT '',
-               algorithm TEXT NOT NULL DEFAULT '', key_ref TEXT NOT NULL DEFAULT '',
-               enc_params TEXT NOT NULL DEFAULT '{}')""",
+               algorithm TEXT NOT NULL, token TEXT NOT NULL DEFAULT '')""",
+        # vault.db: hash-chained audit log (audit_service).
+        """CREATE TABLE IF NOT EXISTS audit_log (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, action TEXT NOT NULL,
+               file_id TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT '', result TEXT NOT NULL,
+               detail TEXT NOT NULL DEFAULT '', prev_hash TEXT NOT NULL, hash TEXT NOT NULL)""",
+        # keys.db: the Vault Master Key, wrapped under the password and under the recovery key
+        # (auth_service). salt and Argon2id parameters are NULL for the recovery slot.
+        """CREATE TABLE IF NOT EXISTS keys.vault_keys (
+               slot TEXT PRIMARY KEY, salt BLOB, time_cost INTEGER, memory_kib INTEGER,
+               parallelism INTEGER, nonce BLOB NOT NULL, wrapped_vmk BLOB NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS keys.unlock_state (
+               id INTEGER PRIMARY KEY CHECK (id = 1), failed_count INTEGER NOT NULL,
+               last_failed REAL NOT NULL)""",
+        # keys.db: per-file key records sealed under the VMK, found by token (key_management_service).
         """CREATE TABLE IF NOT EXISTS keys.wrapped_keys (
-               key_ref TEXT PRIMARY KEY, kek_id TEXT NOT NULL, nonce BLOB NOT NULL, ct BLOB NOT NULL)""",
-        "CREATE TABLE IF NOT EXISTS keys.legacy_keys (file_id TEXT PRIMARY KEY, key BLOB NOT NULL)",
+               token TEXT PRIMARY KEY, file_id TEXT NOT NULL, algorithm TEXT NOT NULL,
+               level TEXT NOT NULL, nonce BLOB NOT NULL, ct BLOB NOT NULL)""",
     ]),
 ]
 
@@ -198,15 +212,11 @@ _COLUMNS = tuple(FileMetadata.__dataclass_fields__)
 
 
 def _to_row(meta: FileMetadata) -> list:
-    d = meta.to_dict()
-    d["enc_params"] = json.dumps(d["enc_params"])
-    return [d[c] for c in _COLUMNS]
+    return [getattr(meta, c) for c in _COLUMNS]
 
 
 def _from_row(row: sqlite3.Row) -> FileMetadata:
-    d = {c: row[c] for c in _COLUMNS}
-    d["enc_params"] = json.loads(d["enc_params"])
-    return FileMetadata(**d)
+    return FileMetadata(**{c: row[c] for c in _COLUMNS})
 
 
 class SqliteVaultRepository(VaultRepository):

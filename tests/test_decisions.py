@@ -2,7 +2,7 @@ import pytest
 
 from services.security_decision_service import (CHOICE_REQUIRED, ERROR, FINAL, UNSUPPORTED,
                                                 SecurityDecisionEngine, validate_final_level)
-from services.vault_service import VaultService
+from conftest import new_vault
 
 
 @pytest.fixture(scope="module")
@@ -70,7 +70,7 @@ def test_vault_rejects_non_final_and_account_invalid_levels(tmp_path, engine, pa
     src = tmp_path / "doc.txt"
     src.write_text("hello")
     before = src.read_bytes()
-    vault = VaultService(tmp_path / "DEDV")
+    vault = new_vault(tmp_path / "DEDV")
     pending = engine.decide(src, "Enterprise", params_by_class["High/Critical"])
     unsupported = engine.decide(src, "Personal", params_by_class["High/Critical"])
     assert vault.store_files([(src, pending), (src, unsupported)], "Enterprise").stored == []

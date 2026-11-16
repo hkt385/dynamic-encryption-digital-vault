@@ -1,5 +1,6 @@
 PySide6>=6.6
 cryptography>=49   # ML-KEM (cryptography.hazmat.primitives.asymmetric.mlkem) needs a recent release; tested with 49.0.0
+argon2-cffi==25.1.0   # Argon2id: derives the key that wraps the Vault Master Key from the vault password
 pyinstaller
 # Model runtime. scikit-learn is pinned to the version final_model.joblib was trained/pickled with;
 # a different version can fail to load it or change predictions.

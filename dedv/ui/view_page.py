@@ -84,9 +84,8 @@ class ViewPage(QWidget):
                 date = datetime.fromisoformat(m.date_added).strftime("%d/%m/%Y")
             except ValueError:
                 date = m.date_added
-            algo = algorithm_name(m.algorithm) if m.algorithm else "AES-256 (legacy)"
             cells = (m.original_name, m.file_type, format_size(m.size_bytes), date,
-                     m.predicted_level or "-", algo, m.security_level)
+                     m.predicted_level or "-", algorithm_name(m.algorithm), m.security_level)
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if c == 0:
@@ -119,7 +118,7 @@ class ViewPage(QWidget):
                                 f"{meta.original_name} is an executable or script-host file type. "
                                 "DEDV does not launch these.")
         elif kind == EXTERNAL:
-            self._open_external(meta.original_name, data)
+            self._open_external(meta.original_name, data, file_id)
         else:
             dlg = FileViewerDialog(meta.original_name, kind, data, self)
             if dlg.error:
@@ -127,12 +126,12 @@ class ViewPage(QWidget):
             else:
                 dlg.exec()
 
-    def _open_external(self, name: str, data: bytes) -> None:
+    def _open_external(self, name: str, data: bytes, file_id: str) -> None:
         ok = QMessageBox.question(
             self, "Open externally?",
             f"DEDV has no built-in preview for {name}.\n\nTo open it, a decrypted copy must be written "
-            "to a temporary folder and opened by another program. It is deleted when DEDV exits "
-            "(or at the next start if the program still has it open).\n\nOpen it?",
+            "to a temporary folder and opened by another program. It is deleted when DEDV locks or "
+            "exits (or at the next start if the program still has it open).\n\nOpen it?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ok != QMessageBox.Yes:
             return
@@ -141,6 +140,7 @@ class ViewPage(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "Cannot open file", f"Temporary copy failed: {e.strerror or e}")
             return
+        self._get_vault().log_external_open(file_id)      # audit: plaintext left the application
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             self.temp_files.cleanup()
             QMessageBox.warning(self, "Cannot open file", "No program could open this file type.")

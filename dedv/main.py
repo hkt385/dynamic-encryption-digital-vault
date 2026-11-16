@@ -4,9 +4,11 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from config.config_manager import ConfigError, ConfigManager
+from services.storage_service import StorageError
 from ui.main_window import MainWindow
 from ui.setup_dialog import SetupDialog
 from ui.styles import STYLESHEET
+from ui.unlock_dialog import open_vault
 
 
 def selftest(out_path: str, vault_dir: str | None = None) -> int:
@@ -37,8 +39,12 @@ def selftest(out_path: str, vault_dir: str | None = None) -> int:
         result["qtpdf"] = QPdfDocument.__name__
         result["ok"] = all(v[1] for v in trips.values())
         if vault_dir:
+            import os
             from services.vault_service import VaultService
             vault = VaultService(Path(vault_dir))
+            if vault.needs_migration:
+                raise RuntimeError("This vault was written by DEDV 0.1; start the app once to upgrade it.")
+            vault.session.unlock(os.environ.get("DEDV_SELFTEST_PASSWORD", ""))   # never from argv
             files = vault.list_files()
             readable = 0
             for m in files:
@@ -76,7 +82,17 @@ def main() -> int:
             QMessageBox.critical(None, "DEDV", str(e))
             return 1
 
-    window = MainWindow(config)
+    try:
+        vault = open_vault(Path(config.get("vault_directory")))   # unlock / first password / upgrade
+    except StorageError as e:
+        vault = None                         # Settings can still pick a different location
+        QMessageBox.warning(None, "Vault unavailable",
+                            f"{e}\n\nYou can pick a different location in Settings.")
+    else:
+        if vault is None:                    # the user closed the password dialog
+            return 0
+
+    window = MainWindow(config, vault)
     window.show()
     return app.exec()
 

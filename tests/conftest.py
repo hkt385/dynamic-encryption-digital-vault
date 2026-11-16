@@ -6,6 +6,12 @@ from pathlib import Path
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Safety net under the per-test fixture below: even if a test drops its monkeypatches, the old
+# key folder and the temp-view folder can never resolve to the user's real ones.
+import tempfile  # noqa: E402
+_session_dir = tempfile.mkdtemp(prefix="dedv-tests-")
+os.environ["DEDV_KEY_DIR"] = os.path.join(_session_dir, "keys")
+os.environ["DEDV_TEMP_DIR"] = os.path.join(_session_dir, "tmpview")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dedv"))
 
 from services.ml_model_service import FEATURES, get_model_service  # noqa: E402
@@ -46,6 +52,27 @@ def isolated_dirs(tmp_path, monkeypatch):
     """No test may touch the real DEDV key or temp-view folders."""
     monkeypatch.setenv("DEDV_KEY_DIR", str(tmp_path / "keys"))
     monkeypatch.setenv("DEDV_TEMP_DIR", str(tmp_path / "tmpview"))
+
+
+@pytest.fixture(autouse=True)
+def fast_kdf(monkeypatch):
+    """Argon2id at its smallest cost: the suite creates hundreds of vaults. The real cost is
+    measured by bench/benchmark.py and exercised by --selftest."""
+    from services import auth_service
+    monkeypatch.setattr(auth_service, "ARGON2_TIME_COST", 1)
+    monkeypatch.setattr(auth_service, "ARGON2_MEMORY_KIB", 8)
+    monkeypatch.setattr(auth_service, "ARGON2_PARALLELISM", 1)
+
+
+PASSWORD = "correct horse battery"
+
+
+def new_vault(vault_dir, password=PASSWORD):
+    """A new vault with a password set, unlocked. vault.recovery_key holds its recovery key."""
+    from services.vault_service import VaultService
+    vault = VaultService(vault_dir)
+    vault.recovery_key = vault.session.initialize(password)
+    return vault
 
 
 def db_bytes(vault_dir) -> bytes:

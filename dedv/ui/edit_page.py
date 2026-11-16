@@ -99,8 +99,7 @@ class EditPage(QWidget):
 
     def _show_selected(self, _=0):
         m = self._current()
-        values = {"File name": m.original_name, "Current algorithm":
-                  (algorithm_name(m.algorithm) if m.algorithm else "AES-256 (legacy entry)"),
+        values = {"File name": m.original_name, "Current algorithm": algorithm_name(m.algorithm),
                   "Current security level": m.security_level, "Type": m.file_type,
                   "Size": format_size(m.size_bytes)} if m else {}
         for key, label in self.details.items():
@@ -108,7 +107,7 @@ class EditPage(QWidget):
         self.target.clear()
         if m:
             for level in levels_for(self._get_account_type()):
-                if level != m.security_level or not m.algorithm:
+                if level != m.security_level:
                     self.target.addItem(f"{level}  ({algorithm_name(LEVEL_ALGORITHM[level])})", level)
         self._update_button()
 

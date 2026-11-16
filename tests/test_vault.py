@@ -1,14 +1,13 @@
 import base64
+import dataclasses
 import hashlib
-import json
 
 import pytest
 
-from conftest import db_bytes
-from services.key_management_service import KEY_FILE_NAME, KeyManagementService
+from conftest import db_bytes, new_vault
+from services.key_management_service import KeyStoreError
 from services.security_decision_service import FINAL, SecurityDecision
-from services.vault_service import OperationError, VaultService
-from paths import key_dir
+from services.vault_service import OperationError
 
 CONTENT = b"Confidential contents\n" * 200
 
@@ -20,7 +19,7 @@ def decision(level, account="Enterprise"):
 
 @pytest.fixture
 def vault(tmp_path):
-    return VaultService(tmp_path / "DEDV")
+    return new_vault(tmp_path / "DEDV")
 
 
 @pytest.fixture
@@ -40,6 +39,11 @@ def store(vault, src, level, account="Enterprise"):
     return vault.list_files()[-1]
 
 
+def tokens(vault):
+    with vault.db as conn:
+        return [r[0] for r in conn.execute("SELECT token FROM keys.wrapped_keys")]
+
+
 @pytest.mark.parametrize("level,algo", [
     ("Low", "AES-128-GCM"), ("Standard", "AES-256-GCM"), ("High", "CHACHA20-POLY1305"),
     ("Critical", "AES-256-GCM+ML-KEM-1024"), ("Enhanced", "AES-256-GCM+RSA-4096-OAEP")])
@@ -56,28 +60,36 @@ def test_store_uses_the_selected_level_and_can_be_read_back(vault, src, level, a
     assert sha(enc) == enc_hash                                   # opening never modifies the file
 
 
-def test_metadata_and_keystore_hold_no_secret_key_material(vault, src, tmp_path):
-    meta = store(vault, src, "Standard")
-    key = vault.keys.get_secrets(meta.key_ref)["key"]
-    for stored in (json.dumps(meta.to_dict()).encode(), db_bytes(vault.vault_dir)):
-        assert stored and key not in stored
-        assert base64.b64encode(key) not in stored and key.hex().encode() not in stored
-    assert not list(vault.vault_dir.rglob(KEY_FILE_NAME))         # KEK file is not in the vault
+@pytest.mark.parametrize("level", ["Standard", "Enhanced", "Critical"])
+def test_metadata_holds_only_a_token_and_no_key_material_is_stored_in_clear(vault, src, level):
+    meta = store(vault, src, level)
+    key = vault.keys.release_key(meta.token, meta.file_id, vault.session)
+    assert set(dataclasses.asdict(meta)) == {
+        "file_id", "original_name", "file_type", "size_bytes", "date_added", "security_level",
+        "encrypted_name", "predicted_level", "algorithm", "token"}
+    assert meta.token not in (meta.file_id, "") and meta.file_id not in meta.token
+    stored = db_bytes(vault.vault_dir)
+    for secret in list(key.secrets.values()) + [base64.b64decode(v) for v in key.params.values()]:
+        # data key / RSA private key / ML-KEM seed, and the RSA-wrapped key / KEM ciphertext
+        assert secret not in stored and base64.b64encode(secret) not in stored
+    # The key record is in keys.db only; vault.db never mentions it beyond the token.
+    assert not list(vault.vault_dir.rglob("*.json")) and not list(vault.vault_dir.rglob("*_key.txt"))
 
 
 def test_enterprise_only_levels_rejected_for_personal(vault, src):
     for level in ("High", "Critical"):
         res = vault.store_files([(src, decision(level, "Personal"))], "Personal")
         assert res.stored == [] and res.failed
-    assert vault.list_files() == []
+    assert vault.list_files() == [] and tokens(vault) == []
 
 
-def test_missing_key_file_reported_for_open(vault, src):
-    meta = store(vault, src, "Low")
-    (key_dir() / KEY_FILE_NAME).unlink()
-    fresh = VaultService(vault.vault_dir)
-    with pytest.raises(OperationError, match="key file is missing"):
-        fresh.read_file(meta.file_id)
+def test_tampered_metadata_level_or_algorithm_is_refused(vault, src):
+    """vault.db says something else than the sealed key record: the record wins, the read fails."""
+    meta = store(vault, src, "Standard")
+    with vault.db as conn:
+        conn.execute("UPDATE files SET security_level='Critical' WHERE file_id=?", (meta.file_id,))
+    with pytest.raises(OperationError, match="does not match its key record"):
+        vault.read_file(meta.file_id)
 
 
 def test_corrupted_and_missing_files_give_clear_errors(vault, src):
@@ -91,30 +103,6 @@ def test_corrupted_and_missing_files_give_clear_errors(vault, src):
         vault.read_file(meta.file_id)
     with pytest.raises(OperationError, match="no longer in the vault"):
         vault.read_file("does-not-exist")
-
-
-def test_legacy_entry_without_algorithm_still_opens_and_can_be_migrated(tmp_path, src):
-    # Entry written by the pre-algorithm version: AES-256-GCM, plaintext key in dev_keys.json.
-    import aes
-    vault_dir = tmp_path / "DEDV"
-    for sub in ("encrypted_files", "metadata", "config"):
-        (vault_dir / sub).mkdir(parents=True)
-    key = aes.generate_key(2)
-    enc = vault_dir / "encrypted_files" / "old.enc"
-    aes.encrypt_file(str(src), str(enc), key)
-    (vault_dir / "config" / "dev_keys.json").write_text(json.dumps({"old": base64.b64encode(key).decode()}))
-    (vault_dir / "metadata" / "files.json").write_text(json.dumps([
-        {"file_id": "old", "original_name": "report.txt", "file_type": "TXT",
-         "size_bytes": len(CONTENT), "date_added": "2026-01-01T00:00:00",
-         "security_level": "Standard", "encrypted_name": "old.enc"}]))
-    vault = VaultService(vault_dir)                       # imports the JSON vault
-    assert vault.read_file("old")[1] == CONTENT
-    new = vault.reencrypt("old", "High", "Enterprise")
-    assert new.algorithm == "CHACHA20-POLY1305"
-    assert not enc.exists()
-    with pytest.raises(Exception, match="legacy key store"):          # plaintext key row is gone
-        vault.keys.get_legacy_key("old")
-    assert vault.read_file("old")[1] == CONTENT
 
 
 # ---- re-encryption ---------------------------------------------------------------------------
@@ -132,8 +120,9 @@ def test_reencrypt_really_changes_algorithm_and_keeps_content(vault, src, start,
     assert vault.read_file(meta.file_id)[1] == CONTENT
     listed = vault.list_files()
     assert len(listed) == 1 and listed[0].algorithm == new.algorithm
-    with pytest.raises(Exception):                                # old key reference was removed
-        vault.keys.get_secrets(meta.key_ref)
+    assert new.token != meta.token and tokens(vault) == [new.token]      # new token; old record removed
+    with pytest.raises(KeyStoreError, match="No key is stored"):
+        vault.keys.release_key(meta.token, meta.file_id, vault.session)
     assert not [p for p in vault.encrypted_dir.iterdir() if p.suffix != ".enc"]   # no .part leftovers
     assert sorted(p.name for p in vault.encrypted_dir.iterdir()) == [new.encrypted_name]
 
@@ -157,8 +146,7 @@ def _assert_untouched(vault, meta, old_bytes):
     assert (vault.encrypted_dir / meta.encrypted_name).read_bytes() == old_bytes
     assert vault.read_file(meta.file_id)[1] == CONTENT
     assert [p.name for p in vault.encrypted_dir.iterdir()] == [meta.encrypted_name]   # no orphans
-    with vault.db as conn:
-        assert [r[0] for r in conn.execute("SELECT key_ref FROM keys.wrapped_keys")] == [meta.key_ref]
+    assert tokens(vault) == [meta.token]                                              # no orphan key record
 
 
 def test_failure_during_encryption_preserves_original(vault, src, monkeypatch):
@@ -187,25 +175,35 @@ def test_failure_of_metadata_update_rolls_back_files_and_keys(vault, src, monkey
 def test_failure_storing_new_key_rolls_back(vault, src, monkeypatch):
     meta = store(vault, src, "Standard")
     old = (vault.encrypted_dir / meta.encrypted_name).read_bytes()
-    from services.key_management_service import KeyStoreError
-    real = vault.keys.store_secrets
 
-    def boom(ref, secrets):
+    def boom(*a):
         raise KeyStoreError("The key store could not be written: denied")
-    monkeypatch.setattr(vault.keys, "store_secrets", boom)
-    with pytest.raises(OperationError):
-        vault.reencrypt(meta.file_id, "Low", "Enterprise")
-    monkeypatch.setattr(vault.keys, "store_secrets", real)
+    with monkeypatch.context() as m:
+        m.setattr(vault.keys, "store_key", boom)
+        with pytest.raises(OperationError):
+            vault.reencrypt(meta.file_id, "Low", "Enterprise")
+    _assert_untouched(vault, meta, old)
+
+
+def test_failure_after_the_new_key_was_stored_rolls_the_key_back_too(vault, src, monkeypatch):
+    """The swap is one transaction: a failure in its last step undoes the first ones."""
+    meta = store(vault, src, "Standard")
+    old = (vault.encrypted_dir / meta.encrypted_name).read_bytes()
+    with monkeypatch.context() as m:
+        m.setattr(vault.keys, "delete", lambda t: (_ for _ in ()).throw(KeyStoreError("denied")))
+        with pytest.raises(OperationError, match="original file is unchanged"):
+            vault.reencrypt(meta.file_id, "High", "Enterprise")
     _assert_untouched(vault, meta, old)
 
 
 def test_failed_verification_preserves_original(vault, src, monkeypatch):
     meta = store(vault, src, "Low")
     old = (vault.encrypted_dir / meta.encrypted_name).read_bytes()
-    monkeypatch.setattr(vault.encryption, "decrypt_bytes",
-                        lambda path, *a: CONTENT if path.name == meta.encrypted_name else b"wrong")
-    with pytest.raises(OperationError, match="Verification"):
-        vault.reencrypt(meta.file_id, "High", "Enterprise")
+    with monkeypatch.context() as m:
+        m.setattr(vault.encryption, "decrypt_bytes",
+                  lambda path, *a: CONTENT if path.name == meta.encrypted_name else b"wrong")
+        with pytest.raises(OperationError, match="Verification"):
+            vault.reencrypt(meta.file_id, "High", "Enterprise")
     _assert_untouched(vault, meta, old)
 
 
