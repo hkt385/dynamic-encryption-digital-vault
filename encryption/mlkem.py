@@ -1,84 +1,70 @@
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import mlkem
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import os
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+# ML-KEM (FIPS 203, CRYSTALS-Kyber) is a key-encapsulation mechanism, not a
+# cipher. It is used here only to establish a 256-bit AES key; the file itself
+# is encrypted with AES-256-GCM (aes.py).
+#
+# ML-KEM-1024 is used (the parameter set intended for AES-256).
+
+_HKDF_INFO = b"dynamic-encryption-digital-vault ML-KEM-1024 -> AES-256-GCM"
 
 
 def generate_mlkem_keys():
     """
-    Generate an ML-KEM-768 private/public key pair.
+    Generate an ML-KEM-1024 key pair.
+
+    Returns (private_key, public_key). The private key can be saved as a
+    64-byte seed with private_seed() and restored with private_from_seed().
     """
 
-    private_key = mlkem.MLKEM768PrivateKey.generate()
-    public_key = private_key.public_key()
+    private_key = mlkem.MLKEM1024PrivateKey.generate()
 
-    return private_key, public_key
+    return private_key, private_key.public_key()
 
 
-def encrypt_file(input_file, output_file, public_key):
+def private_seed(private_key):
     """
-    Encrypt a file using ML-KEM-768 + AES-256-GCM.
-
-    ML-KEM establishes a shared secret.
-    AES-256-GCM encrypts the actual file.
+    Return the 64-byte seed that fully determines an ML-KEM-1024 private key.
     """
 
-    with open(input_file, "rb") as file:
-        plaintext = file.read()
+    return private_key.private_bytes_raw()
 
-    # Generate a shared secret and ML-KEM ciphertext.
+
+def private_from_seed(seed):
+    """
+    Rebuild an ML-KEM-1024 private key from its 64-byte seed.
+    """
+
+    return mlkem.MLKEM1024PrivateKey.from_seed_bytes(seed)
+
+
+def _derive_aes_key(shared_secret):
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=_HKDF_INFO
+    ).derive(shared_secret)
+
+
+def encapsulate_key(public_key):
+    """
+    Create a fresh AES-256 key and its ML-KEM encapsulation.
+
+    Returns (aes_key, kem_ciphertext). Only the ciphertext may be stored
+    next to the encrypted file; the AES key must not be.
+    """
+
     shared_secret, kem_ciphertext = public_key.encapsulate()
 
-    # ML-KEM shared secret is 256 bits.
-    aes_key = shared_secret
-
-    # Generate a 12-byte AES-GCM nonce.
-    nonce = os.urandom(12)
-
-    aes = AESGCM(aes_key)
-
-    ciphertext = aes.encrypt(
-        nonce,
-        plaintext,
-        None
-    )
-
-    # File format:
-    # [ML-KEM ciphertext][AES nonce][AES ciphertext + tag]
-    with open(output_file, "wb") as file:
-        file.write(kem_ciphertext)
-        file.write(nonce)
-        file.write(ciphertext)
+    return _derive_aes_key(shared_secret), kem_ciphertext
 
 
-def decrypt_file(input_file, output_file, private_key):
+def decapsulate_key(private_key, kem_ciphertext):
     """
-    Decrypt an ML-KEM-768 + AES-256-GCM encrypted file.
+    Recover the AES-256 key from an ML-KEM encapsulation.
     """
 
-    with open(input_file, "rb") as file:
-        encrypted_data = file.read()
-
-    # ML-KEM-768 ciphertext is 1088 bytes.
-    kem_ciphertext = encrypted_data[:1088]
-
-    # Next 12 bytes are the AES-GCM nonce.
-    nonce = encrypted_data[1088:1100]
-
-    # Remaining data is AES ciphertext + authentication tag.
-    ciphertext = encrypted_data[1100:]
-
-    # Recover the shared secret using ML-KEM decapsulation.
-    shared_secret = private_key.decapsulate(kem_ciphertext)
-
-    aes_key = shared_secret
-
-    aes = AESGCM(aes_key)
-
-    plaintext = aes.decrypt(
-        nonce,
-        ciphertext,
-        None
-    )
-
-    with open(output_file, "wb") as file:
-        file.write(plaintext)
+    return _derive_aes_key(private_key.decapsulate(kem_ciphertext))
