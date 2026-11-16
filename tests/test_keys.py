@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from conftest import db_bytes
 from paths import key_dir
 from services.key_management_service import (KEK_ID, KEY_FILE_NAME, DevKeyFile, KeyManagementService,
                                              KeyStoreError)
@@ -36,8 +37,9 @@ def test_secrets_are_not_stored_in_clear(tmp_path):
     km = KeyManagementService(tmp_path)
     secret = os.urandom(32)
     km.store_secrets("f1", {"key": secret})
-    stored = (tmp_path / "config" / "wrapped_keys.json").read_text()
-    assert base64.b64encode(secret).decode() not in stored and secret.hex() not in stored
+    stored = db_bytes(tmp_path)
+    assert stored and secret not in stored
+    assert base64.b64encode(secret) not in stored and secret.hex().encode() not in stored
     assert str(key_dir()) not in str(tmp_path)           # key file is outside the vault
 
 

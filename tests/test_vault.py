@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from conftest import db_bytes
 from services.key_management_service import KEY_FILE_NAME, KeyManagementService
 from services.security_decision_service import FINAL, SecurityDecision
 from services.vault_service import OperationError, VaultService
@@ -57,11 +58,10 @@ def test_store_uses_the_selected_level_and_can_be_read_back(vault, src, level, a
 
 def test_metadata_and_keystore_hold_no_secret_key_material(vault, src, tmp_path):
     meta = store(vault, src, "Standard")
-    blob = json.dumps(meta.to_dict())
-    wrapped = (vault.vault_dir / "config" / "wrapped_keys.json").read_text()
     key = vault.keys.get_secrets(meta.key_ref)["key"]
-    for text in (blob, wrapped):
-        assert base64.b64encode(key).decode() not in text and key.hex() not in text
+    for stored in (json.dumps(meta.to_dict()).encode(), db_bytes(vault.vault_dir)):
+        assert stored and key not in stored
+        assert base64.b64encode(key) not in stored and key.hex().encode() not in stored
     assert not list(vault.vault_dir.rglob(KEY_FILE_NAME))         # KEK file is not in the vault
 
 
@@ -93,23 +93,27 @@ def test_corrupted_and_missing_files_give_clear_errors(vault, src):
         vault.read_file("does-not-exist")
 
 
-def test_legacy_entry_without_algorithm_still_opens_and_can_be_migrated(vault, src):
+def test_legacy_entry_without_algorithm_still_opens_and_can_be_migrated(tmp_path, src):
     # Entry written by the pre-algorithm version: AES-256-GCM, plaintext key in dev_keys.json.
     import aes
+    vault_dir = tmp_path / "DEDV"
+    for sub in ("encrypted_files", "metadata", "config"):
+        (vault_dir / sub).mkdir(parents=True)
     key = aes.generate_key(2)
-    enc = vault.encrypted_dir / "old.enc"
+    enc = vault_dir / "encrypted_files" / "old.enc"
     aes.encrypt_file(str(src), str(enc), key)
-    (vault.vault_dir / "config" / "dev_keys.json").write_text(json.dumps({"old": base64.b64encode(key).decode()}))
-    from models.file_metadata import FileMetadata
-    index = vault.vault_dir / "metadata" / "files.json"
-    index.write_text(json.dumps([{"file_id": "old", "original_name": "report.txt", "file_type": "TXT",
-                                  "size_bytes": len(CONTENT), "date_added": "2026-01-01T00:00:00",
-                                  "security_level": "Standard", "encrypted_name": "old.enc"}]))
+    (vault_dir / "config" / "dev_keys.json").write_text(json.dumps({"old": base64.b64encode(key).decode()}))
+    (vault_dir / "metadata" / "files.json").write_text(json.dumps([
+        {"file_id": "old", "original_name": "report.txt", "file_type": "TXT",
+         "size_bytes": len(CONTENT), "date_added": "2026-01-01T00:00:00",
+         "security_level": "Standard", "encrypted_name": "old.enc"}]))
+    vault = VaultService(vault_dir)                       # imports the JSON vault
     assert vault.read_file("old")[1] == CONTENT
     new = vault.reencrypt("old", "High", "Enterprise")
     assert new.algorithm == "CHACHA20-POLY1305"
     assert not enc.exists()
-    assert "old" not in json.loads((vault.vault_dir / "config" / "dev_keys.json").read_text())
+    with pytest.raises(Exception, match="legacy key store"):          # plaintext key row is gone
+        vault.keys.get_legacy_key("old")
     assert vault.read_file("old")[1] == CONTENT
 
 
@@ -153,8 +157,8 @@ def _assert_untouched(vault, meta, old_bytes):
     assert (vault.encrypted_dir / meta.encrypted_name).read_bytes() == old_bytes
     assert vault.read_file(meta.file_id)[1] == CONTENT
     assert [p.name for p in vault.encrypted_dir.iterdir()] == [meta.encrypted_name]   # no orphans
-    wrapped = json.loads((vault.vault_dir / "config" / "wrapped_keys.json").read_text())
-    assert list(wrapped) == [meta.key_ref]
+    with vault.db as conn:
+        assert [r[0] for r in conn.execute("SELECT key_ref FROM keys.wrapped_keys")] == [meta.key_ref]
 
 
 def test_failure_during_encryption_preserves_original(vault, src, monkeypatch):
@@ -217,5 +221,5 @@ def test_no_plaintext_on_disk_during_reencrypt(vault, src, tmp_path):
     meta = store(vault, src, "Standard")
     vault.reencrypt(meta.file_id, "Critical", "Enterprise")
     for p in tmp_path.rglob("*"):
-        if p.is_file() and p != src:
+        if p.is_file() and p != src and p.name != "vault.lock":      # the lock file is locked, and empty
             assert CONTENT[:30] not in p.read_bytes(), p

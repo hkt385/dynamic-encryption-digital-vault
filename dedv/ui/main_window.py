@@ -113,6 +113,9 @@ class MainWindow(QMainWindow):
 
     def load_vault(self):
         """(Re)open the vault from configuration and refresh every page."""
+        if self.vault is not None:
+            self.vault.close()                    # releases the old vault's cross-process lock
+            self.vault = None
         try:
             self.vault = VaultService(Path(self.config.get("vault_directory")))
         except StorageError as e:
@@ -145,5 +148,7 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self.temp_files.cleanup()
+        if self.vault is not None:
+            self.vault.close()
         self._settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(e)

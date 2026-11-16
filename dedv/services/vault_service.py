@@ -15,7 +15,8 @@ from models.file_metadata import FileMetadata
 from services.encryption_service import LEGACY_ALGORITHM, EncryptionError, EncryptionService
 from services.key_management_service import KeyManagementService, KeyStoreError
 from services.security_decision_service import SecurityDecision, validate_final_level
-from services.storage_service import (JsonVaultRepository, StorageError,
+from services.migration_service import import_json_vault
+from services.storage_service import (SqliteVaultRepository, StorageError, VaultDb, VaultLock,
                                       VaultRepository, create_vault)
 
 
@@ -34,10 +35,22 @@ class VaultService:
     def __init__(self, vault_dir: Path, keys: KeyManagementService | None = None):
         self.vault_dir = Path(vault_dir)
         create_vault(self.vault_dir.parent)           # ensures folders exist
-        self.repo: VaultRepository = JsonVaultRepository(self.vault_dir)
+        self._vault_lock = VaultLock(self.vault_dir)  # one DEDV process per vault
+        try:
+            import_json_vault(self.vault_dir)         # vault written by DEDV 0.1 (JSON): upgrade it
+            self.db = VaultDb(self.vault_dir)
+        except Exception:
+            self._vault_lock.release()
+            raise
+        self.repo: VaultRepository = SqliteVaultRepository(self.db)
         self.encryption = EncryptionService()
-        self.keys = keys or KeyManagementService(self.vault_dir)
+        self.keys = keys or KeyManagementService(self.vault_dir, db=self.db)
         self._op_lock = threading.Lock()
+
+    def close(self) -> None:
+        """Close the databases and release the cross-process lock. Safe to call twice."""
+        self.db.close()
+        self._vault_lock.release()
 
     @property
     def encrypted_dir(self) -> Path:
@@ -81,14 +94,14 @@ class VaultService:
         dest = self.encrypted_dir / enc_name
         enc = self.encryption.encrypt_file(p, dest, decision.level)
         try:
-            self.keys.store_secrets(file_id, enc.secrets)
-            self.repo.add_file(FileMetadata.new(
-                p.name, (p.suffix.lstrip(".") or "file").upper(), p.stat().st_size,
-                decision.level, enc_name, file_id, decision.predicted or "",
-                enc.algorithm, file_id, enc.params))
+            with self.db:                        # key and metadata are written together or not at all
+                self.keys.store_secrets(file_id, enc.secrets)
+                self.repo.add_file(FileMetadata.new(
+                    p.name, (p.suffix.lstrip(".") or "file").upper(), p.stat().st_size,
+                    decision.level, enc_name, file_id, decision.predicted or "",
+                    enc.algorithm, file_id, enc.params))
         except Exception:
-            dest.unlink(missing_ok=True)         # no file, key or metadata is left half-written
-            self.keys.delete(file_id)
+            dest.unlink(missing_ok=True)         # no ciphertext is left without its key and metadata
             raise
 
     # ---- open ----------------------------------------------------------------------------------
@@ -117,9 +130,10 @@ class VaultService:
         """Decrypt in memory, encrypt with the algorithm of `new_level`, then switch metadata.
 
         Order is chosen so a failure at any point leaves the original file, key and metadata
-        intact: new ciphertext and new key are written under NEW names, verified by decrypting,
-        and only then does the atomic metadata update make them current. The old ciphertext and
-        key are removed last (best effort; leftovers are harmless orphans)."""
+        intact: the new ciphertext is written under a NEW name and verified by decrypting it.
+        Then one database transaction stores the new key, switches the metadata to the new
+        ciphertext and removes the old key; it commits or rolls back as a whole. The old
+        ciphertext is deleted only after the commit (best effort; a leftover is a harmless orphan)."""
         try:
             validate_final_level(account_type, new_level)
         except ValueError as e:
@@ -144,33 +158,29 @@ class VaultService:
                 enc = self.encryption.encrypt_data(plaintext, new_path, new_level)
                 if self.encryption.decrypt_bytes(new_path, enc.algorithm, enc.params, enc.secrets) != plaintext:
                     raise OperationError("Verification of the new encryption failed.")
-                self.keys.store_secrets(new_ref, enc.secrets)
                 new_meta = dataclasses.replace(
                     meta, security_level=new_level, algorithm=enc.algorithm, key_ref=new_ref,
                     enc_params=enc.params, encrypted_name=new_name)
-                self.repo.update_file(new_meta)
+                with self.db:                    # the swap: all three changes or none
+                    self.keys.store_secrets(new_ref, enc.secrets)
+                    self.repo.update_file(new_meta)
+                    if meta.algorithm:
+                        self.keys.delete(meta.key_ref or meta.file_id)
+                    else:
+                        self.keys.delete_legacy_key(meta.file_id)
             except (OperationError, EncryptionError, KeyStoreError, StorageError, OSError) as e:
                 new_path.unlink(missing_ok=True)
-                self.keys.delete(new_ref)
                 if isinstance(e, OperationError):
                     raise
                 raise OperationError(f"Re-encryption failed; the original file is unchanged. "
                                      f"{getattr(e, 'strerror', None) or e}")
             except Exception:
                 new_path.unlink(missing_ok=True)
-                self.keys.delete(new_ref)
                 raise
             finally:
                 del plaintext
-            self._discard_old(meta)
+            try:
+                (self.encrypted_dir / meta.encrypted_name).unlink(missing_ok=True)
+            except OSError:
+                pass     # orphaned old ciphertext; the new version is already current
             return new_meta
-
-    def _discard_old(self, old: FileMetadata) -> None:
-        try:
-            (self.encrypted_dir / old.encrypted_name).unlink(missing_ok=True)
-            if old.algorithm:
-                self.keys.delete(old.key_ref or old.file_id)
-            else:
-                self.keys.delete_legacy_key(old.file_id)
-        except (OSError, KeyStoreError):
-            pass     # orphaned old ciphertext/key; the new version is already current

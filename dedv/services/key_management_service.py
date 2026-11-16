@@ -5,9 +5,10 @@ DEVELOPMENT STAND-IN, not production key storage:
     local folder outside the vault and outside the installer (paths.key_dir()).
   * Per-file secrets (AES / ChaCha20 data keys, RSA private key, ML-KEM seed) are never stored
     in the clear: each record is sealed with AES-256-GCM under the KEK (associated data = key
-    reference) and kept in <vault>/config/wrapped_keys.json.
+    reference) and kept in the wrapped_keys table of <vault>/config/keys.db.
   * Vault entries created before this design used plaintext keys in <vault>/config/dev_keys.json;
-    they are still readable (legacy) and are migrated when re-encrypted.
+    they are imported into the legacy_keys table, are still readable, and are replaced by a
+    wrapped record when the file is re-encrypted.
 """
 import base64
 import json
@@ -21,6 +22,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from paths import key_dir
+from services.storage_service import VaultDb
 
 KEK_ID = "DEDV"
 KEY_FILE_NAME = "DEDV_key.txt"
@@ -113,32 +115,15 @@ class DevKeyFile:
 
 
 class KeyManagementService:
-    def __init__(self, vault_dir: Path, key_file: DevKeyFile | None = None):
-        cfg = Path(vault_dir) / "config"
-        self._wrapped = cfg / "wrapped_keys.json"
-        self._legacy = cfg / "dev_keys.json"
+    def __init__(self, vault_dir: Path, key_file: DevKeyFile | None = None, db: VaultDb | None = None):
+        self.db = db or VaultDb(vault_dir)      # records live in <vault>/config/keys.db
         self.key_file = key_file or DevKeyFile()
         self._kek: bytes | None = None
         self._lock = threading.RLock()
 
-    # ---- storage helpers ---------------------------------------------------------------------
-    def _read(self, path: Path) -> dict:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        except (OSError, ValueError) as e:
-            raise KeyStoreError(f"The key store could not be read: {path.name} ({e})")
-        return data if isinstance(data, dict) else {}
-
-    def _write(self, path: Path, data: dict) -> None:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp.replace(path)
-        except OSError as e:
-            raise KeyStoreError(f"The key store could not be written: {e.strerror or e}")
+    def _has_records(self) -> bool:
+        with self.db as conn:
+            return conn.execute("SELECT 1 FROM keys.wrapped_keys LIMIT 1").fetchone() is not None
 
     # ---- KEK ---------------------------------------------------------------------------------
     def _get_kek(self, create_ok: bool) -> bytes:
@@ -149,7 +134,7 @@ class KeyManagementService:
         elif not create_ok:
             raise KeyStoreError(f"The DEDV key file is missing: {self.key_file.path}. "
                                 "Files encrypted with it cannot be opened until it is restored.")
-        elif self._read(self._wrapped):
+        elif self._has_records():
             # Never mint a replacement while records exist that only the lost key could unwrap.
             raise KeyStoreError(f"The DEDV key file is missing: {self.key_file.path}, but this vault "
                                 "already holds keys wrapped with it. Restore the file from a backup.")
@@ -179,40 +164,37 @@ class KeyManagementService:
             nonce = os.urandom(12)
             payload = json.dumps({k: base64.b64encode(v).decode() for k, v in secrets.items()}).encode()
             sealed = AESGCM(kek).encrypt(nonce, payload, key_ref.encode())
-            data = self._read(self._wrapped)
-            data[key_ref] = {"kek_id": KEK_ID, "nonce": base64.b64encode(nonce).decode(),
-                             "ct": base64.b64encode(sealed).decode()}
-            self._write(self._wrapped, data)
+            with self.db as conn:
+                conn.execute("INSERT OR REPLACE INTO keys.wrapped_keys VALUES (?, ?, ?, ?)",
+                             (key_ref, KEK_ID, nonce, sealed))
 
     def get_secrets(self, key_ref: str) -> dict[str, bytes]:
         with self._lock:
-            record = self._read(self._wrapped).get(key_ref)
+            with self.db as conn:
+                record = conn.execute("SELECT nonce, ct FROM keys.wrapped_keys WHERE key_ref=?",
+                                      (key_ref,)).fetchone()
             if record is None:
                 raise KeyStoreError(f"No key found for this file (reference {key_ref}).")
             kek = self._get_kek(create_ok=False)
             try:
-                payload = AESGCM(kek).decrypt(base64.b64decode(record["nonce"]),
-                                              base64.b64decode(record["ct"]), key_ref.encode())
+                payload = AESGCM(kek).decrypt(record["nonce"], record["ct"], key_ref.encode())
                 return {k: base64.b64decode(v) for k, v in json.loads(payload).items()}
             except (InvalidTag, KeyError, ValueError):
                 raise KeyStoreError("The stored key for this file could not be unwrapped. "
                                     "The DEDV key file may not be the one it was created with.")
 
     def delete(self, key_ref: str) -> None:
-        with self._lock:
-            data = self._read(self._wrapped)
-            if data.pop(key_ref, None) is not None:
-                self._write(self._wrapped, data)
+        with self.db as conn:
+            conn.execute("DELETE FROM keys.wrapped_keys WHERE key_ref=?", (key_ref,))
 
-    # ---- legacy (plaintext dev_keys.json written before the KEK existed) ----------------------
+    # ---- legacy (plaintext keys imported from dev_keys.json, written before the KEK existed) ---
     def get_legacy_key(self, file_id: str) -> bytes:
-        try:
-            return base64.b64decode(self._read(self._legacy)[file_id])
-        except (KeyError, ValueError):
+        with self.db as conn:
+            row = conn.execute("SELECT key FROM keys.legacy_keys WHERE file_id=?", (file_id,)).fetchone()
+        if row is None:
             raise KeyStoreError("No key found for this file (legacy key store).")
+        return row["key"]
 
     def delete_legacy_key(self, file_id: str) -> None:
-        with self._lock:
-            data = self._read(self._legacy)
-            if data.pop(file_id, None) is not None:
-                self._write(self._legacy, data)
+        with self.db as conn:
+            conn.execute("DELETE FROM keys.legacy_keys WHERE file_id=?", (file_id,))

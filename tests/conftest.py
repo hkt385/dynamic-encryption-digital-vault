@@ -48,6 +48,13 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("DEDV_TEMP_DIR", str(tmp_path / "tmpview"))
 
 
+def db_bytes(vault_dir) -> bytes:
+    """Raw bytes of both vault databases (and their WAL files), for 'no secret on disk' checks."""
+    vault_dir = Path(vault_dir)
+    return b"".join(p.read_bytes() for d in ("metadata", "config") for p in (vault_dir / d).glob("*.db*")
+                    if not p.name.endswith("-shm"))
+
+
 def wait_until(cond, timeout=20.0):
     """Process Qt events until cond() is true (worker threads deliver results via signals)."""
     import time
