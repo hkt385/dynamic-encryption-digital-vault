@@ -51,6 +51,9 @@ after another made whichever level ran first at a size look up to 1.5x slower.
   primitive decryption opens the file once, untimed, before it is timed, so it measures the
   cryptography only.
 - RSA-4096 key generation time varies a lot between runs (random prime search); look at the IQR.
+- Enhanced reads cost about 0.3 s at every size. A separate check on the reference machine (10 runs,
+  median) split it up: loading the RSA-4096 private key with `load_der_private_key` 281 ms (the
+  library validates the key on every load), RSA-OAEP decryption 1.8 ms; key generation 584 ms.
 - One machine, one run. The vault lives on the same disk as `%TEMP%`.
 
 ## Output (`results/`)
