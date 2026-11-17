@@ -18,10 +18,16 @@ a = Analysis(
         # Add bundled resources here, e.g. ("dedv/resources", "resources")
         ("model/final_model.joblib", "model"),   # read by paths.model_path() via sys._MEIPASS
         ("docs/DEVELOPER_INSTRUCTIONS.md", "docs"),   # shown on the Developer page (paths.docs_dir())
-        # NOTE: no key material is ever bundled; the DEDV key is created at runtime in %LOCALAPPDATA%.
+        # NOTE: no key material or vault database is ever bundled; vaults are created at runtime.
     ],
-    hiddenimports=["aes", "chacha", "mlkem", "rsa"] + ML_HIDDEN,   # encryption/*.py, flat imports via sys.path
-    excludes=["tkinter", "xgboost", "matplotlib", "IPython", "pytest"],  # not used at runtime
+    # encryption/*.py are imported flatly via sys.path; argon2-cffi loads its compiled binding
+    # through cffi, which static analysis can miss.
+    hiddenimports=["aes", "chacha", "mlkem", "rsa",
+                   "argon2", "argon2.low_level", "_argon2_cffi_bindings", "_cffi_backend"] + ML_HIDDEN,
+    # Not used at runtime. QtWebEngine (~200 MB) is pulled in by the PySide6 meta-package only.
+    excludes=["tkinter", "xgboost", "matplotlib", "IPython", "pytest",
+              "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+              "PySide6.QtWebChannel", "PySide6.QtWebSockets"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(
