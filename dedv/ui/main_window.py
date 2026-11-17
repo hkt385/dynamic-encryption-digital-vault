@@ -8,7 +8,7 @@ from config.config_manager import ConfigManager
 from services.security_decision_service import SecurityDecisionEngine
 from services.storage_service import StorageError, create_vault
 from services.vault_service import VaultService
-from services.viewer_service import TempFiles
+from services.viewer_service import STALE_AFTER_SECONDS, SWEEP_EVERY_SECONDS, TempFiles
 from ui.developer_page import DeveloperPage
 from ui.edit_page import EditPage
 from ui.loading_overlay import LoadingOverlay, TaskRunner
@@ -54,6 +54,9 @@ class MainWindow(QMainWindow):
         self.runner = TaskRunner(self.overlay)
         self.temp_files = TempFiles()
         self.temp_files.sweep_stale()          # plaintext copies left by an earlier run
+        self._sweep = QTimer(self)             # and copies opened externally more than 5 min ago
+        self._sweep.timeout.connect(lambda: self.temp_files.sweep_stale(STALE_AFTER_SECONDS))
+        self._sweep.start(SWEEP_EVERY_SECONDS * 1000)
 
         # Pages
         self.view_page = ViewPage(lambda: self.vault, self.temp_files)

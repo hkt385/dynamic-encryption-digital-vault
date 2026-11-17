@@ -1,3 +1,5 @@
+# NOT USED: kept for reference only. No security level maps to ECC
+# (see services/encryption_service.LEVEL_ALGORITHM and docs/DEVELOPER_INSTRUCTIONS.md).
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF

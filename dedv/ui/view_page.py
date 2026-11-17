@@ -161,8 +161,9 @@ class ViewPage(QWidget):
         ok = QMessageBox.question(
             self, "Open externally?",
             f"DEDV has no built-in preview for {name}.\n\nTo open it, a decrypted copy must be written "
-            "to a temporary folder and opened by another program. It is deleted when DEDV locks or "
-            "exits (or at the next start if the program still has it open).\n\nOpen it?",
+            "to a temporary folder and opened by another program. DEDV overwrites and deletes the "
+            "copy about 5 minutes after opening, or when it locks or exits, once no program is using "
+            "it. On SSDs this cannot guarantee the data is gone from the disk.\n\nOpen it?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ok != QMessageBox.Yes:
             return

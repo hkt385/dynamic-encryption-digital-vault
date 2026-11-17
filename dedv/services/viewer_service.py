@@ -4,18 +4,24 @@ Preferred path is in-memory preview (text / image / PDF) - no plaintext touches 
 Only files handed to an external application are written to disk, into a dedicated folder
 (paths.temp_view_dir(), outside the vault) under a unique random directory.
 
-Cleanup limits (documented in docs/DEVELOPER_INSTRUCTIONS.md): the app cannot know when an
-external program is done with a file, so copies are deleted when the app exits and any that were
-still locked are removed by the sweep at the next start. Plaintext is deleted, not securely
-wiped (not possible to guarantee on SSDs / journaling filesystems).
+Cleanup (documented in docs/DEVELOPER_INSTRUCTIONS.md): the app cannot know when an external
+program is done with a file. Copies are removed when the vault locks, when the app exits, by a
+sweep every SWEEP_EVERY_SECONDS of copies older than STALE_AFTER_SECONDS, and by a full sweep at
+the next start. A copy is first renamed - on Windows that fails while another program has it
+open, so a file in use is skipped, not zeroed under that program - then overwritten with zeros,
+flushed and deleted. This is NOT a secure wipe: on SSDs (wear levelling), journaling or
+copy-on-write file systems, and with backup or cloud-sync tools, old blocks can survive.
 """
 import os
 import re
-import shutil
+import time
 import uuid
 from pathlib import Path
 
-from paths import restrict_permissions, temp_view_dir
+from paths import restrict_permissions, temp_view_dir, wipe_and_delete
+
+STALE_AFTER_SECONDS = 300
+SWEEP_EVERY_SECONDS = 60
 
 TEXT_EXT = {".txt", ".md", ".log", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".ini", ".cfg",
             ".conf", ".toml", ".html", ".htm", ".css", ".py", ".js", ".ts", ".java", ".c", ".h",
@@ -66,26 +72,38 @@ class TempFiles:
         return path
 
     def cleanup(self) -> list[Path]:
-        """Delete tracked copies. Returns the ones that could not be removed (still in use)."""
-        left = []
-        for d in self._dirs:
-            try:
-                shutil.rmtree(d)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                left.append(d)
-        self._dirs = left
-        return left
+        """Wipe and delete tracked copies. Returns the ones still in use (kept for a later sweep)."""
+        self._dirs = [d for d in self._dirs if not _remove(d)]
+        return self._dirs
 
-    def sweep_stale(self) -> int:
-        """Remove leftovers from earlier runs (call at startup). Returns how many were removed."""
+    def sweep_stale(self, older_than: float = 0) -> int:
+        """Wipe and delete copy folders older than `older_than` seconds (0 = all: call at startup).
+        Folders still in use are skipped and retried later. Returns how many were removed."""
         removed = 0
         if self.root.is_dir():
+            cutoff = time.time() - older_than
             for d in self.root.iterdir():
                 try:
-                    shutil.rmtree(d)
-                    removed += 1
+                    old = d.is_dir() and d.stat().st_mtime <= cutoff
                 except OSError:
-                    pass            # in use by another process; next start will retry
+                    continue
+                if old and _remove(d):
+                    removed += 1
+                    if d in self._dirs:
+                        self._dirs.remove(d)
         return removed
+
+
+def _remove(d: Path) -> bool:
+    """Wipe and delete one copy folder. False if a file in it is still in use."""
+    try:
+        for f in [p for p in d.iterdir() if p.is_file()]:
+            moved = f.with_name(f"{uuid.uuid4().hex}.del")
+            f.rename(moved)          # Windows: fails while another program has the file open
+            wipe_and_delete(moved)
+        d.rmdir()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
