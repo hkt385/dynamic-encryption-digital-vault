@@ -11,13 +11,17 @@ Account rules (enforced here and again in VaultService, not just hidden in the U
                  assigned (status UNSUPPORTED).
   * Enterprise - Low / Standard / Enhanced are final. High/Critical needs an explicit user
                  choice of High or Critical (status CHOICE_REQUIRED until chosen).
-The High / Critical choice only records the intended configuration; nothing is encrypted here.
+Upward-only override: once a level is final the user may raise it, never lower it below the
+prediction (High/Critical counts as High). Predictions with confidence below 70 % or of the
+unreliable Enhanced class must be acknowledged before they can be stored. VaultService enforces
+both rules again, so the UI cannot bypass them. Nothing is encrypted in this module.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from services.ml_model_service import (ENHANCED_VALIDATED_PRECISION, ENHANCED_VALIDATED_RECALL,
-                                       MLModelService, ModelError, get_model_service)
+from services.ml_model_service import (CONFIDENCE_REVIEW_THRESHOLD, ENHANCED_VALIDATED_PRECISION,
+                                       ENHANCED_VALIDATED_RECALL, MLModelService, ModelError,
+                                       get_model_service)
 
 PERSONAL = "Personal"
 ENTERPRISE = "Enterprise"
@@ -26,11 +30,15 @@ HIGH_CRITICAL = "High/Critical"
 PERSONAL_LEVELS = ("Low", "Standard", "Enhanced")
 ENTERPRISE_PREDICTIONS = ("Low", "Standard", "Enhanced", HIGH_CRITICAL)
 ENTERPRISE_FINAL_LEVELS = ("Low", "Standard", "Enhanced", "High", "Critical")
+LEVEL_ORDER = ENTERPRISE_FINAL_LEVELS     # lowest to highest
+UNRELIABLE_CLASS = "Enhanced"             # validated precision and recall about 0.10
 
-# Intended configurations only; no quantum-resistant encryption is implemented by choosing Critical.
+# What each choice does (services.encryption_service.LEVEL_ALGORITHM). Critical adds a post-quantum
+# key encapsulation; that alone does not make the file "quantum-resistant".
 HIGH_CRITICAL_OPTIONS = {
-    "High": ("Less storage space", "Intended configuration: non-quantum encryption."),
-    "Critical": ("More storage space", "Intended configuration: quantum-oriented encryption."),
+    "High": ("Less storage space", "ChaCha20-Poly1305 with a 256-bit key."),
+    "Critical": ("More storage space",
+                 "AES-256-GCM; the file key is encapsulated with ML-KEM-1024 (FIPS 203)."),
 }
 
 FINAL = "final"
@@ -50,10 +58,29 @@ class SecurityDecision:
     probabilities: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)   # parameters this prediction was made with
     notes: list = field(default_factory=list)    # review-required / Enhanced reliability warnings
+    acknowledged: bool = False                   # the user confirmed a prediction that needs review
 
     @property
     def is_final(self) -> bool:
         return self.status == FINAL and self.level is not None
+
+    @property
+    def needs_ack(self) -> bool:
+        """Low confidence or the unreliable Enhanced class: the user must acknowledge it."""
+        return (self.predicted == UNRELIABLE_CLASS or
+                (self.confidence is not None and self.confidence < CONFIDENCE_REVIEW_THRESHOLD))
+
+    @property
+    def override(self) -> bool:
+        return is_override(self.predicted, self.level)
+
+    def raise_level(self, level: str) -> None:
+        """Change the final level; anything allowed for the account and not below the prediction."""
+        if not self.is_final:
+            raise ValueError("This prediction has no final level yet.")
+        validate_final_level(self.account_type, level)
+        validate_not_below(self.predicted, level)
+        self.level = level
 
     def choose_high_critical(self, choice: str) -> None:
         """Finalise an Enterprise High/Critical prediction as High or Critical."""
@@ -65,13 +92,44 @@ class SecurityDecision:
         self.message = f"Predicted High/Critical; you selected {choice}."
 
 
+def account_levels(account_type: str) -> tuple[str, ...]:
+    """Final levels an account may use: Personal never gets High or Critical."""
+    return {PERSONAL: PERSONAL_LEVELS, ENTERPRISE: ENTERPRISE_FINAL_LEVELS}.get(account_type, ())
+
+
 def validate_final_level(account_type: str, level: str | None) -> None:
     """Raise ValueError unless `level` may be stored for this account type."""
-    allowed = {PERSONAL: PERSONAL_LEVELS, ENTERPRISE: ENTERPRISE_FINAL_LEVELS}.get(account_type)
-    if allowed is None:
+    allowed = account_levels(account_type)
+    if not allowed:
         raise ValueError(f"Unknown account type {account_type!r}.")
     if level not in allowed:
         raise ValueError(f"'{level}' is not an allowed security level for a {account_type} account.")
+
+
+def floor_level(predicted: str | None) -> str | None:
+    """Lowest final level a prediction allows (High/Critical -> High); None if there is none."""
+    if predicted == HIGH_CRITICAL:
+        return "High"
+    return predicted if predicted in LEVEL_ORDER else None
+
+
+def is_below(level: str, floor: str | None) -> bool:
+    return floor is not None and LEVEL_ORDER.index(level) < LEVEL_ORDER.index(floor)
+
+
+def validate_not_below(predicted: str | None, level: str, floor: str | None = None) -> None:
+    """Raise ValueError if `level` is below the floor (default: the prediction's floor)."""
+    floor = floor or floor_level(predicted)
+    if is_below(level, floor):
+        what = (f"the predicted level {predicted}" if floor_level(predicted) == floor
+                else f"the current level {floor} (no prediction was recorded for this file)")
+        raise ValueError(f"{level} is below {what}. The security level may be raised but not lowered.")
+
+
+def is_override(predicted: str | None, level: str | None) -> bool:
+    """True if the final level differs from a single-level prediction. Choosing High or Critical
+    for a High/Critical prediction is the required choice, not an override."""
+    return predicted in LEVEL_ORDER and level is not None and level != predicted
 
 
 class SecurityDecisionEngine:
@@ -112,7 +170,8 @@ class SecurityDecisionEngine:
             if account_type == PERSONAL:
                 d.status = UNSUPPORTED
                 d.message = ("The model predicts High/Critical, which Personal accounts do not offer. "
-                             "No level was assigned; a compatible three-level model is required.")
+                             "No level was assigned. To store it at High or Critical, use an "
+                             "Enterprise vault (account type in Settings).")
             else:
                 d.status = CHOICE_REQUIRED
                 d.message = "Predicted High/Critical: choose High or Critical."

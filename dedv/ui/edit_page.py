@@ -3,14 +3,10 @@ from PySide6.QtWidgets import QComboBox, QLabel, QMessageBox, QPushButton, QVBox
 
 from models.file_metadata import format_size
 from services.encryption_service import LEVEL_ALGORITHM, algorithm_name
-from services.security_decision_service import ENTERPRISE_FINAL_LEVELS, PERSONAL_LEVELS
+from services.security_decision_service import account_levels, floor_level
 from services.storage_service import StorageError
 from services.vault_service import OperationError
-
-
-def levels_for(account_type: str) -> tuple[str, ...]:
-    """Target levels an account may choose: Personal never sees High or Critical."""
-    return {"Personal": PERSONAL_LEVELS, "Enterprise": ENTERPRISE_FINAL_LEVELS}.get(account_type, ())
+from ui.upload_page import fill_levels
 
 
 class EditPage(QWidget):
@@ -106,18 +102,28 @@ class EditPage(QWidget):
             label.setText(values.get(key, "-"))
         self.target.clear()
         if m:
-            for level in levels_for(self._get_account_type()):
-                if level != m.security_level:
-                    self.target.addItem(f"{level}  ({algorithm_name(LEVEL_ALGORITHM[level])})", level)
+            # Never below the stored prediction; files upgraded without one keep their current level
+            # as the floor (VaultService.reencrypt enforces the same rule).
+            floor = floor_level(m.predicted_level) or m.security_level
+            why = (f"Below the predicted level {m.predicted_level}." if floor_level(m.predicted_level)
+                   else f"Below the current level {floor}; no prediction was recorded for this file.")
+            fill_levels(self.target,
+                        [lv for lv in account_levels(self._get_account_type()) if lv != m.security_level],
+                        floor, why + " The level may be raised but not lowered.",
+                        lambda lv: f"{lv}  ({algorithm_name(LEVEL_ALGORITHM[lv])})")
+            enabled = [i for i in range(self.target.count()) if self.target.model().item(i).isEnabled()]
+            self.target.setCurrentIndex(enabled[0] if enabled else -1)
         self._update_button()
 
     def _update_button(self):
-        ready = self._current() is not None and self.target.count() > 0 and not self.runner.busy
+        ready = self._current() is not None and self.target.currentIndex() >= 0 and not self.runner.busy
         self.button.setEnabled(ready)
         if not self._files:
             self.status.setText("There are no files in the vault yet.")
-        elif self.target.count() == 0:
-            self.status.setText("No other security level is available for this account type.")
+        elif self.target.currentIndex() < 0:
+            self.status.setText("No higher security level is available for this file and account type.")
+        else:
+            self.status.setText("")
 
     # ---- re-encrypt ----------------------------------------------------------------------------
     def reencrypt(self):

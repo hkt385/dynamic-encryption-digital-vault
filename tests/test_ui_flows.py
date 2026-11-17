@@ -3,18 +3,18 @@ import threading
 import time
 
 import pytest
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QWidget
 
 from config.config_manager import ConfigManager
 from conftest import PASSWORD, new_vault, wait_until
-from services.security_decision_service import FINAL, SecurityDecision
-from ui.edit_page import EditPage, levels_for
+from services.security_decision_service import FINAL, SecurityDecision, account_levels
+from ui.edit_page import EditPage
 from ui.file_viewer import FileViewerDialog
 from ui.loading_overlay import OVERLAY_TEXT, LoadingOverlay, TaskRunner
 from ui.main_window import MainWindow
 from ui.parameter_bar import ParameterBar
-from ui.upload_page import Entry, UploadPage
+from ui.upload_page import FINAL_COLUMN, Entry, UploadPage
 from ui.view_page import ViewPage
 from services.vault_service import VaultService
 
@@ -115,6 +115,8 @@ def test_encrypt_button_shows_overlay_and_reports_success_only_after_completion(
         qapp, model, params_by_class, tmp_path, host, no_blocking_boxes):
     page, vault, src, overlay, runner = _upload_setup(qapp, model, tmp_path, host, "Low", params_by_class["Low"])
     page.run_prediction()
+    assert not page.store_btn.isEnabled()                         # confidence below 70 %: review first
+    page.ack.click()
     assert page.store_btn.isEnabled()
     gate = threading.Event()
     real = vault.store_files
@@ -142,6 +144,7 @@ def test_encrypt_failure_hides_overlay_and_reports_error(qapp, model, params_by_
                                                           no_blocking_boxes):
     page, vault, src, overlay, runner = _upload_setup(qapp, model, tmp_path, host, "Low", params_by_class["Low"])
     page.run_prediction()
+    page.ack.click()
     vault.store_files = lambda *a: (_ for _ in ()).throw(RuntimeError("kaboom"))
     page.store_btn.click()
     assert wait_until(lambda: bool(no_blocking_boxes))
@@ -167,6 +170,24 @@ def test_final_selected_level_is_the_level_used_for_encryption(qapp, model, para
     assert (meta.security_level, meta.predicted_level, meta.algorithm) == (
         "Critical", "High/Critical", "AES-256-GCM+ML-KEM-1024")
     assert vault.read_file(meta.file_id)[1] == CONTENT
+
+
+def test_raised_level_is_used_and_recorded_as_override(qapp, model, params_by_class, tmp_path, host,
+                                                       no_blocking_boxes):
+    page, vault, *_ = _upload_setup(qapp, model, tmp_path, host, "x", params_by_class["Standard"])
+    page.run_prediction()
+    d = page.entries[0].decision
+    combo = page.table.cellWidget(0, FINAL_COLUMN)
+    i = combo.findData("High")
+    combo.setCurrentIndex(i)
+    combo.activated.emit(i)
+    page.ack.click()
+    page.store_btn.click()
+    assert wait_until(lambda: bool(no_blocking_boxes))
+    m = vault.list_files()[0]
+    assert (m.predicted_level, m.security_level, m.override, m.algorithm) == (
+        "Standard", "High", True, "CHACHA20-POLY1305")
+    assert m.confidence == d.confidence and m.model_inputs == params_by_class["Standard"]
 
 
 def test_personal_cannot_encrypt_high_critical(qapp, model, params_by_class, tmp_path, host):
@@ -211,9 +232,23 @@ def _stored_vault(tmp_path, name, content, level="Standard"):
     vault = new_vault(tmp_path / "DEDV")
     src = tmp_path / name
     src.write_bytes(content)
-    d = SecurityDecision(FINAL, "Enterprise", predicted=level, level=level)
+    d = SecurityDecision(FINAL, "Enterprise", predicted=level, level=level, confidence=0.81,
+                         params={"Sensitivity": "High"}, acknowledged=True)
     assert vault.store_files([(src, d)], "Enterprise").stored == [name]
     return vault, vault.list_files()[-1]
+
+
+def test_view_page_details_show_the_recorded_decision(qapp, tmp_path):
+    vault, meta = _stored_vault(tmp_path, "note.txt", CONTENT)
+    vault.reencrypt(meta.file_id, "High", "Enterprise")
+    page = ViewPage(lambda: vault)
+    page.refresh()
+    assert "Select a file" in page.details.text()
+    page.table.selectRow(0)
+    text = page.details.text()
+    for part in ("note.txt", "Predicted: Standard", "Confidence: 81%", "Final level: High",
+                 "Override: Yes", f"Decided: {meta.date_added.replace('T', ' ')}", "Sensitivity: High"):
+        assert part in text
 
 
 def test_double_click_opens_in_memory_without_touching_encrypted_file(qapp, tmp_path, monkeypatch):
@@ -309,8 +344,19 @@ def test_edit_page_shows_current_details_and_account_valid_targets(qapp, tmp_pat
     assert page.details["Current algorithm"].text() == "AES-256"
     targets = [page.target.itemData(i) for i in range(page.target.count())]
     assert targets == ["Low", "Enhanced"]                      # no High/Critical for Personal, not current
-    assert levels_for("Enterprise") == ("Low", "Standard", "Enhanced", "High", "Critical")
-    assert "High" not in levels_for("Personal") and "Critical" not in levels_for("Personal")
+    assert not page.target.model().item(0).isEnabled()         # Low is below the predicted Standard
+    assert "raised but not lowered" in page.target.itemData(0, Qt.ToolTipRole)
+    assert page.target.currentData() == "Enhanced" and page.button.isEnabled()
+    assert account_levels("Enterprise") == ("Low", "Standard", "Enhanced", "High", "Critical")
+    assert "High" not in account_levels("Personal") and "Critical" not in account_levels("Personal")
+
+
+def test_edit_page_with_no_higher_level_disables_reencrypt(qapp, tmp_path, host):
+    page, *_ = _edit_setup(tmp_path, host, "Personal", level="Enhanced")
+    assert [page.target.itemData(i) for i in range(page.target.count())] == ["Low", "Standard"]
+    assert not any(page.target.model().item(i).isEnabled() for i in range(page.target.count()))
+    assert page.target.currentIndex() == -1 and not page.button.isEnabled()
+    assert "No higher security level" in page.status.text()
 
 
 def test_reencrypt_button_uses_same_overlay_and_updates_everything(qapp, tmp_path, host, no_blocking_boxes):

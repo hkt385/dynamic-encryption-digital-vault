@@ -1,7 +1,8 @@
 import pytest
 
-from services.security_decision_service import (CHOICE_REQUIRED, ERROR, FINAL, UNSUPPORTED,
-                                                SecurityDecisionEngine, validate_final_level)
+from services.security_decision_service import (CHOICE_REQUIRED, ERROR, FINAL, HIGH_CRITICAL_OPTIONS,
+                                                UNSUPPORTED, SecurityDecision, SecurityDecisionEngine,
+                                                floor_level, is_override, validate_final_level)
 from conftest import new_vault
 
 
@@ -46,6 +47,48 @@ def test_final_level_validation_per_account():
         validate_final_level("Enterprise", lv)
     with pytest.raises(ValueError):
         validate_final_level("Enterprise", "High/Critical")
+
+
+def test_floor_and_override_rules():
+    assert [floor_level(p) for p in ("Low", "Enhanced", "High/Critical", "", None, "bogus")] == [
+        "Low", "Enhanced", "High", None, None, None]
+    assert is_override("Low", "High") and not is_override("Low", "Low")
+    assert not is_override("High/Critical", "High") and not is_override("High/Critical", "Critical")
+    assert not is_override("", "High") and not is_override("Standard", None)
+
+
+@pytest.mark.parametrize("account,predicted,start,allowed,refused", [
+    ("Enterprise", "Standard", "Standard", ["Enhanced", "High", "Critical", "Standard"], ["Low"]),
+    ("Enterprise", "High/Critical", "High", ["Critical", "High"], ["Low", "Standard", "Enhanced"]),
+    ("Personal", "Low", "Low", ["Standard", "Enhanced", "Low"], ["High", "Critical"]),
+    ("Personal", "Enhanced", "Enhanced", [], ["Low", "Standard", "High", "Critical"])])
+def test_raise_level_is_upward_only_and_account_bound(account, predicted, start, allowed, refused):
+    d = SecurityDecision(FINAL, account, predicted=predicted, level=start)
+    for lv in refused:
+        with pytest.raises(ValueError):
+            d.raise_level(lv)
+        assert d.level == start
+    for lv in allowed:                                       # may go back down to the prediction
+        d.raise_level(lv)
+        assert d.level == lv
+
+
+def test_raise_level_needs_a_final_level():
+    with pytest.raises(ValueError):
+        SecurityDecision(CHOICE_REQUIRED, "Enterprise", predicted="High/Critical").raise_level("Critical")
+
+
+def test_needs_ack_for_low_confidence_or_enhanced():
+    assert SecurityDecision(FINAL, "Personal", predicted="Enhanced", level="Enhanced", confidence=0.99).needs_ack
+    assert SecurityDecision(FINAL, "Personal", predicted="Low", level="Low", confidence=0.69).needs_ack
+    assert not SecurityDecision(FINAL, "Personal", predicted="Low", level="Low", confidence=0.70).needs_ack
+
+
+def test_personal_unsupported_suggests_enterprise_and_no_quantum_claims(engine, params_by_class):
+    d = engine.decide("x.txt", "Personal", params_by_class["High/Critical"])
+    assert "Enterprise vault" in d.message
+    text = str(HIGH_CRITICAL_OPTIONS).lower()
+    assert "ml-kem-1024" in text and "chacha20-poly1305" in text and "quantum" not in text
 
 
 def test_errors_are_reported_not_raised(engine, model):

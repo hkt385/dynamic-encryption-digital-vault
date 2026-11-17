@@ -51,8 +51,21 @@ class ViewPage(QWidget):
         el.addWidget(t)
         el.addWidget(s)
 
+        # Details of the selected file: the decision recorded when it was stored.
+        self.details = QLabel()
+        self.details.setObjectName("muted")
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.table.itemSelectionChanged.connect(self._show_details)
+        self._files: dict[str, object] = {}
+        files_view = QWidget()
+        fl = QVBoxLayout(files_view)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(self.table, 1)
+        fl.addWidget(self.details)
+
         self.stack = QStackedLayout()
-        self.stack.addWidget(self.table)
+        self.stack.addWidget(files_view)
         self.stack.addWidget(empty)
         self.error = QLabel()
         self.error.setObjectName("muted")
@@ -78,6 +91,7 @@ class ViewPage(QWidget):
             self.stack.setCurrentIndex(1)
             return
         self.stack.setCurrentIndex(0)
+        self._files = {m.file_id: m for m in files}
         self.table.setRowCount(len(files))
         for r, m in enumerate(sorted(files, key=lambda m: m.date_added, reverse=True)):
             try:
@@ -93,6 +107,23 @@ class ViewPage(QWidget):
                 if c in (4, LEVEL_COLUMN):
                     item.setForeground(QColor(LEVEL_COLORS.get(text, MUTED)))
                 self.table.setItem(r, c, item)
+        self._show_details()
+
+    def _show_details(self):
+        rows = self.table.selectionModel().selectedRows()
+        item = self.table.item(rows[0].row(), 0) if rows else None
+        m = self._files.get(item.data(Qt.UserRole)) if item else None
+        if m is None:
+            self.details.setText("Select a file to see how its security level was decided.")
+            return
+        confidence = f"{m.confidence:.0%}" if m.confidence is not None else "not recorded"
+        inputs = ", ".join(f"{k}: {v}" for k, v in m.model_inputs.items()) or "not recorded"
+        self.details.setText(
+            f"{m.original_name}\n"
+            f"Predicted: {m.predicted_level or 'not recorded'}    Confidence: {confidence}    "
+            f"Final level: {m.security_level}    Override: {'Yes' if m.override else 'No'}\n"
+            f"Decided: {m.date_added.replace('T', ' ')} (later changes are in the audit log)\n"
+            f"Model inputs: {inputs}")
 
     # ---- opening -------------------------------------------------------------------------------
     def _on_double_click(self, row: int, _col: int):

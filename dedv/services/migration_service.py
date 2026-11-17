@@ -39,6 +39,7 @@ from services.audit_service import OK, AuditLog
 from services.auth_service import AuthError, AuthSession, check_password
 from services.encryption_service import LEGACY_ALGORITHM, EncryptionService
 from services.key_management_service import KeyManagementService
+from services.security_decision_service import is_override
 from services.storage_service import KEYS_DB, VAULT_DB, SqliteVaultRepository, StorageError, VaultDb
 
 LEGACY_INDEX = Path("metadata") / "files.json"
@@ -185,7 +186,8 @@ def migrate(vault_dir: Path, password: str, allow_unverified: bool = False,
                     file_type=entry["file_type"], size_bytes=entry["size_bytes"],
                     date_added=entry["date_added"], security_level=entry["security_level"],
                     encrypted_name=entry["encrypted_name"],
-                    predicted_level=entry.get("predicted_level", ""), algorithm=algorithm, token=token)
+                    predicted_level=entry.get("predicted_level", ""), algorithm=algorithm, token=token,
+                    override=is_override(entry.get("predicted_level"), entry["security_level"]))
                 repo.add_file(meta)
                 imported.append(meta)
 

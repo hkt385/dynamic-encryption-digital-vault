@@ -9,6 +9,7 @@ one transaction. In WAL mode SQLite does not guarantee that such a transaction i
 both files if the machine loses power mid-commit; writers therefore insert the key row before the
 row that refers to it, so the worst case is an unreferenced key, never a file without its key.
 """
+import json
 import os
 import sqlite3
 import threading
@@ -32,7 +33,9 @@ MIGRATIONS = [
                file_id TEXT PRIMARY KEY, original_name TEXT NOT NULL, file_type TEXT NOT NULL,
                size_bytes INTEGER NOT NULL, date_added TEXT NOT NULL, security_level TEXT NOT NULL,
                encrypted_name TEXT NOT NULL, predicted_level TEXT NOT NULL DEFAULT '',
-               algorithm TEXT NOT NULL, token TEXT NOT NULL DEFAULT '')""",
+               algorithm TEXT NOT NULL, token TEXT NOT NULL DEFAULT '',
+               confidence REAL, override INTEGER NOT NULL DEFAULT 0,
+               model_inputs TEXT NOT NULL DEFAULT '{}')""",
         # vault.db: hash-chained audit log (audit_service).
         """CREATE TABLE IF NOT EXISTS audit_log (
                id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, action TEXT NOT NULL,
@@ -212,11 +215,17 @@ _COLUMNS = tuple(FileMetadata.__dataclass_fields__)
 
 
 def _to_row(meta: FileMetadata) -> list:
-    return [getattr(meta, c) for c in _COLUMNS]
+    row = {c: getattr(meta, c) for c in _COLUMNS}
+    row["override"] = int(meta.override)
+    row["model_inputs"] = json.dumps(meta.model_inputs)     # keeps the model's input order
+    return list(row.values())
 
 
 def _from_row(row: sqlite3.Row) -> FileMetadata:
-    return FileMetadata(**{c: row[c] for c in _COLUMNS})
+    values = {c: row[c] for c in _COLUMNS}
+    values["override"] = bool(values["override"])
+    values["model_inputs"] = json.loads(values["model_inputs"] or "{}")
+    return FileMetadata(**values)
 
 
 class SqliteVaultRepository(VaultRepository):

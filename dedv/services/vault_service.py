@@ -21,7 +21,8 @@ from services.audit_service import FAILED, OK, AuditLog
 from services.auth_service import AuthError, AuthSession
 from services.encryption_service import EncryptionError, EncryptionService
 from services.key_management_service import KeyManagementService, KeyStoreError
-from services.security_decision_service import SecurityDecision, validate_final_level
+from services.security_decision_service import (SecurityDecision, floor_level, is_override,
+                                                validate_final_level, validate_not_below)
 from services.storage_service import (SqliteVaultRepository, StorageError, VaultDb, VaultLock,
                                       VaultRepository, create_vault)
 
@@ -131,7 +132,10 @@ class VaultService:
             raise OperationError("File not found.")
         if not decision.is_final:
             raise OperationError(decision.message or "No final security level.")
+        if decision.needs_ack and not decision.acknowledged:
+            raise OperationError("This prediction needs review. Acknowledge it before encrypting.")
         validate_final_level(account_type, decision.level)       # re-checked outside the UI
+        validate_not_below(decision.predicted, decision.level)
         file_id = uuid.uuid4().hex
         enc_name = f"{file_id}.enc"
         dest = self.encrypted_dir / enc_name
@@ -142,7 +146,8 @@ class VaultService:
                                             enc.secrets, enc.params, self.session)
                 self.repo.add_file(FileMetadata.new(
                     p.name, (p.suffix.lstrip(".") or "file").upper(), p.stat().st_size,
-                    decision.level, enc_name, file_id, decision.predicted or "", enc.algorithm, token))
+                    decision.level, enc_name, file_id, decision.predicted or "", enc.algorithm, token,
+                    decision.confidence, decision.override, decision.params))
                 self.audit.append("store", OK, file_id, decision.level)
         except Exception:
             dest.unlink(missing_ok=True)         # no ciphertext is left without its key and metadata
@@ -199,6 +204,12 @@ class VaultService:
                 raise OperationError("This file is no longer in the vault index.")
             if meta.security_level == new_level:
                 raise OperationError(f"The file is already at security level {new_level}.")
+            # Never below the stored prediction; files upgraded without one keep their current level.
+            try:
+                validate_not_below(meta.predicted_level, new_level,
+                                   floor_level(meta.predicted_level) or meta.security_level)
+            except ValueError as e:
+                raise OperationError(str(e))
             change = f"{meta.security_level} -> {new_level}"
             new_name = f"{file_id}.{uuid.uuid4().hex[:8]}.enc"
             new_path = self.encrypted_dir / new_name
@@ -213,7 +224,8 @@ class VaultService:
                                                     enc.secrets, enc.params, self.session)
                         new_meta = dataclasses.replace(
                             meta, security_level=new_level, algorithm=enc.algorithm, token=token,
-                            encrypted_name=new_name)
+                            encrypted_name=new_name,
+                            override=is_override(meta.predicted_level, new_level))
                         self.repo.update_file(new_meta)
                         self.keys.delete(meta.token)
                         self.audit.append("reencrypt", OK, file_id, new_level, change)
