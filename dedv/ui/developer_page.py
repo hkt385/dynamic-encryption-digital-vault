@@ -1,9 +1,9 @@
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMessageBox, QPushButton, QTextBrowser,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QTextBrowser, QWidget
 
 from paths import docs_dir
 from services import migration_service
 from services.storage_service import StorageError
+from ui.widgets import InfoBar, page_layout
 
 DOC_NAME = "DEVELOPER_INSTRUCTIONS.md"
 
@@ -19,27 +19,23 @@ class DeveloperPage(QWidget):
 
         self.verify_btn = QPushButton("Verify audit log")
         self.verify_btn.clicked.connect(self.verify_audit_log)
-        self.audit_result = QLabel()
-        self.audit_result.setObjectName("muted")
-        row = QHBoxLayout()
-        row.addWidget(self.verify_btn)
-        row.addWidget(self.audit_result, 1)
-
-        self.old_key_note = QLabel()
-        self.old_key_note.setWordWrap(True)
+        self.audit_result = InfoBar()
+        self.old_key_note = InfoBar()
         self.old_key_btn = QPushButton("Delete old key file")
         self.old_key_btn.clicked.connect(self.delete_old_key_file)
-        key_row = QHBoxLayout()
-        key_row.addWidget(self.old_key_note, 1)
-        key_row.addWidget(self.old_key_btn)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self.verify_btn)
+        row.addWidget(self.old_key_btn)
+        row.addStretch()
 
         self.browser = QTextBrowser()
         self.browser.setOpenExternalLinks(False)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
+        lay, _ = page_layout(self, "Developer", "Check the audit log and read how DEDV is built.")
         lay.addLayout(row)
-        lay.addLayout(key_row)
-        lay.addWidget(self.browser)
+        lay.addWidget(self.audit_result)
+        lay.addWidget(self.old_key_note)
+        lay.addWidget(self.browser, 1)
         path = docs_dir() / DOC_NAME
         try:
             self.browser.setMarkdown(path.read_text(encoding="utf-8"))
@@ -56,8 +52,8 @@ class DeveloperPage(QWidget):
         self.old_key_btn.setVisible(present)
         if present:
             self.old_key_note.setText(
-                f"Warning: the plain-text key file of DEDV 0.1 still exists: {key_file}. Upgraded vaults "
-                "no longer use it. Delete it once every old vault has been upgraded.")
+                f"The plain-text key file of DEDV 0.1 still exists: {key_file}. Upgraded vaults "
+                "no longer use it. Delete it once every old vault has been upgraded.", "warning")
 
     def verify_audit_log(self):
         vault = self._get_vault()
@@ -66,11 +62,13 @@ class DeveloperPage(QWidget):
         try:
             ok, count, bad_id = vault.audit.verify()
         except StorageError as e:
-            self.audit_result.setText(str(e))
+            self.audit_result.setText(str(e), "error")
             return
-        self.audit_result.setText(f"Audit log intact: {count} entries, hash chain verified." if ok else
-                                  f"AUDIT LOG DAMAGED: the hash chain breaks at entry {bad_id} of {count}. "
-                                  "Entries from there on were changed, inserted or removed.")
+        if ok:
+            self.audit_result.setText(f"Audit log intact: {count} entries, hash chain verified.", "success")
+        else:
+            self.audit_result.setText(f"Audit log damaged: the hash chain breaks at entry {bad_id} of {count}. "
+                                      "Entries from there on were changed, inserted or removed.", "error")
 
     def delete_old_key_file(self):
         key_file = migration_service.old_key_file()

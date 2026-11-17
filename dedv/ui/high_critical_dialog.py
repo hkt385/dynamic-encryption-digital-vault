@@ -27,21 +27,25 @@ class HighCriticalDialog(QDialog):
         self.buttons: dict[str, QPushButton] = {}
         for level, (storage, config) in HIGH_CRITICAL_OPTIONS.items():
             btn = QPushButton(f"{level}\n{storage}\n{config}")
+            btn.setObjectName("option")
             btn.setMinimumHeight(90)
             btn.clicked.connect(lambda _=False, lv=level: self._pick(lv))
             row.addWidget(btn)
             self.buttons[level] = btn
         later = QPushButton("Decide later")
         later.clicked.connect(self.reject)
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        bottom.addWidget(later)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(10)
+        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setSpacing(12)
         lay.addWidget(title)
         lay.addWidget(intro)
         lay.addLayout(row)
         lay.addWidget(note)
-        lay.addWidget(later)
+        lay.addLayout(bottom)
 
     def _pick(self, level: str):
         self.choice = level

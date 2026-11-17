@@ -135,6 +135,17 @@ def test_personal_never_shows_popup_or_high_critical(qapp, model, params_by_clas
     assert not page.store_btn.isEnabled()
 
 
+def test_a_message_shared_by_every_file_is_shown_once(qapp, model, params_by_class, tmp_path):
+    page, f = _page(model, params_by_class["High/Critical"], "Personal", tmp_path)
+    g = tmp_path / "b.txt"
+    g.write_text("data")
+    page.entries.append(Entry(g))
+    page.run_prediction()
+    text = page.status.text()
+    assert text.count("Enterprise vault") == 1 and "a.txt" not in text and "b.txt" not in text
+    assert page.status.severity() == "error" and not page.store_btn.isEnabled()
+
+
 def test_invalidate_clears_predictions(qapp, model, params_by_class, tmp_path, monkeypatch):
     _stub_dialog(monkeypatch, "High")
     page, _ = _page(model, params_by_class["Low"], "Personal", tmp_path)

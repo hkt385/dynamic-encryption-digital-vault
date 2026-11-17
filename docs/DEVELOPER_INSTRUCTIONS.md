@@ -13,6 +13,7 @@ Status words: **Verified** = covered by an automated test or a recorded manual r
 | Pages | `view_page.py`, `upload_page.py`, `edit_page.py`, `settings_page.py`, `developer_page.py` | Navigation order: View, Upload, Edit, Settings, Developer |
 | Unlock / password dialogs | `dedv/ui/unlock_dialog.py` | `open_vault()` is the only way the UI opens a vault: first password, upgrade of a 0.1 vault, or unlock |
 | Shared loading component | `dedv/ui/loading_overlay.py` | `LoadingOverlay` + `TaskRunner`, used by Upload and Edit |
+| Look (Windows 11) | `dedv/ui/styles.py`, `dedv/ui/widgets.py`, `dedv/ui/icons_rc.py` | Follows the Windows light/dark setting (live); fixed Windows-blue accent; Segoe UI Variable + Segoe Fluent Icons. `widgets.py`: side-bar buttons, `InfoBar` messages, page header, Settings rows. Drop-down chevrons are PNGs in `dedv/ui/icons/`, compiled into `icons_rc.py` (`pyside6-rcc dedv/ui/icons/icons.qrc -o dedv/ui/icons_rc.py`) |
 | Services | `dedv/services/` (plain Python, no HTTP API) | The UI calls `VaultService`; see the table below |
 | ML model | `model/final_model.joblib` | Loaded once by `services/ml_model_service.py`; training notes in `CONTEXT_PROMPT.md` |
 | Encryption implementations | `encryption/aes.py`, `chacha.py`, `rsa.py`, `mlkem.py` | `ecc.py` exists but is **not mapped** to any level and not used |
@@ -65,15 +66,17 @@ key. **Never describe Critical as "quantum-resistant".**
 * While unlocked the VMK is held in a `bytearray` that is zeroed on lock (best effort in Python).
 * Failed unlocks: 3 free attempts, then 2, 4, 8 … s, capped at 5 min, persisted in `keys.unlock_state`. Nothing is
   ever deleted because of failed attempts.
-* Auto-lock after idle time (default 10 min, Settings), Lock button. Locking erases the VMK, closes viewers and
+* Auto-lock after idle time (default 10 min, Settings), Lock vault button (side bar). Locking erases the VMK, closes viewers and
   dialogs, removes temporary copies and asks for the password again.
 * One DEDV process per vault: `config\vault.lock` held with an OS lock (`msvcrt.locking`).
 
 ### Decision flow (Upload) and upward-only override
 
-* Upload page -> choose the 7 parameters (saved to settings) -> Select Files -> *Predict Security Level*.
-* The table shows predicted class, confidence, and a Final Level box; a probabilities line shows all classes.
-* Final Level: any level of the account **at or above** the prediction (High/Critical counts as High). Lower
+* Upload page -> answer the 7 questions in "About these files" (saved to settings) -> *Select files* ->
+  *Predict security level*. Messages appear in a coloured bar (error / warning / info); a message that applies
+  to every selected file is shown once.
+* The table shows predicted class, confidence, and a Final level box; a probabilities line shows all classes.
+* Final level: any level of the account **at or above** the prediction (High/Critical counts as High). Lower
   levels are disabled with a tooltip. Enterprise High/Critical first asks High or Critical (dialog).
 * Personal + High/Critical prediction: no level is assigned; the message suggests an Enterprise vault.
 * Confidence < 0.70 or prediction = Enhanced: an acknowledgement tick box must be ticked before *Encrypt* is

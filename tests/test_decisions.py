@@ -106,7 +106,7 @@ def test_missing_model_is_reported_as_error(params_by_class):
 
 def test_review_and_enhanced_notes(engine, params_by_class):
     d = engine.decide("x", "Enterprise", params_by_class["Enhanced"])
-    assert any("REVIEW REQUIRED" in n for n in d.notes)      # max Enhanced confidence is below 0.70
+    assert any("Review required" in n for n in d.notes)      # max Enhanced confidence is below 0.70
     assert any("not reliably" in n for n in d.notes)
 
 

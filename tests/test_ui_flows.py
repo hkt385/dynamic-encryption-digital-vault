@@ -329,6 +329,32 @@ def test_viewer_handles_text_image_pdf_and_corruption(qapp):
     assert not FileViewerDialog("a.txt", "text", b"hi").error
 
 
+def test_windows_theme_follows_light_and_dark(qapp, monkeypatch):
+    from PySide6.QtCore import QFile
+    from PySide6.QtGui import QPalette, QStyleHints
+    from ui import styles
+    from ui.widgets import InfoBar
+    font, palette = qapp.font(), qapp.palette()
+    try:
+        for scheme, name in ((Qt.ColorScheme.Dark, "dark"), (Qt.ColorScheme.Light, "light")):
+            monkeypatch.setattr(QStyleHints, "colorScheme", lambda self, s=scheme: s)
+            styles.apply(qapp)
+            assert styles.color("bg") == styles.THEMES[name]["bg"]
+            assert qapp.palette().color(QPalette.Window).name() == styles.THEMES[name]["bg"]
+            arrow = f":/icons/chevron-down-{name}.png"
+            assert arrow in qapp.styleSheet() and QFile(arrow).exists()      # bundled, not a loose file
+        bar = InfoBar()
+        assert bar.isHidden()
+        bar.setText("Saved.", "success")
+        assert not bar.isHidden() and bar.text() == "Saved." and bar.severity() == "success"
+        bar.setText("")
+        assert bar.isHidden()
+    finally:
+        qapp.setStyleSheet("")
+        qapp.setFont(font)
+        qapp.setPalette(palette)
+
+
 def test_viewer_zoom(qapp):
     from PySide6.QtCore import QBuffer, QIODevice, QPoint, QPointF
     from PySide6.QtGui import QImage, QPainter, QPdfWriter, QWheelEvent

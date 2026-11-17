@@ -11,9 +11,10 @@ from services.storage_service import StorageError
 from services.vault_service import OperationError
 from services.viewer_service import BLOCKED, EXTERNAL, TempFiles, classify
 from ui.file_viewer import FileViewerDialog
-from ui.styles import LEVEL_COLORS, MUTED
+from ui.styles import level_color
+from ui.widgets import page_layout
 
-COLUMNS = ("Name", "Type", "Size", "Date Added", "Predicted", "Algorithm", "Security Level")
+COLUMNS = ("Name", "Type", "Size", "Date added", "Predicted", "Algorithm", "Security level")
 LEVEL_COLUMN = len(COLUMNS) - 1
 
 
@@ -29,31 +30,33 @@ class ViewPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)   # read-only
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setShowGrid(False)
-        self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setFocusPolicy(Qt.NoFocus)
         self.table.cellDoubleClicked.connect(self._on_double_click)
         header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        header.setHighlightSections(False)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1, len(COLUMNS)):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        header.setMinimumSectionSize(110)
+        header.setMinimumSectionSize(96)
 
         empty = QWidget()
         el = QVBoxLayout(empty)
         el.setAlignment(Qt.AlignCenter)
-        t = QLabel("No files in your vault yet.")
-        t.setObjectName("title")
+        t = QLabel("No files in your vault yet")
+        t.setObjectName("subtitle")
         t.setAlignment(Qt.AlignCenter)
-        s = QLabel("Upload a file to get started.")
+        s = QLabel("Go to Upload to encrypt your first file.")
         s.setObjectName("muted")
         s.setAlignment(Qt.AlignCenter)
         el.addWidget(t)
         el.addWidget(s)
 
         # Details of the selected file: the decision recorded when it was stored.
-        self.details = QLabel()
-        self.details.setObjectName("muted")
+        self.details = QLabel()             # styled as a card itself: a wrapped label nested in a
+        self.details.setObjectName("detailsCard")   # card frame does not get its full height
         self.details.setWordWrap(True)
         self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.table.itemSelectionChanged.connect(self._show_details)
@@ -61,6 +64,7 @@ class ViewPage(QWidget):
         files_view = QWidget()
         fl = QVBoxLayout(files_view)
         fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
         fl.addWidget(self.table, 1)
         fl.addWidget(self.details)
 
@@ -68,16 +72,13 @@ class ViewPage(QWidget):
         self.stack.addWidget(files_view)
         self.stack.addWidget(empty)
         self.error = QLabel()
-        self.error.setObjectName("muted")
+        self.error.setObjectName("error")
         self.error.setAlignment(Qt.AlignCenter)
+        self.error.setWordWrap(True)
         self.stack.addWidget(self.error)
 
-        self.hint = QLabel("Double-click a file to open it.")
-        self.hint.setObjectName("muted")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.addLayout(self.stack)
-        lay.addWidget(self.hint)
+        lay, self.hint = page_layout(self, "View", "Files in your vault. Double-click a file to open it.")
+        lay.addLayout(self.stack, 1)
 
     def refresh(self):
         vault = self._get_vault()
@@ -105,7 +106,7 @@ class ViewPage(QWidget):
                 if c == 0:
                     item.setData(Qt.UserRole, m.file_id)
                 if c in (4, LEVEL_COLUMN):
-                    item.setForeground(QColor(LEVEL_COLORS.get(text, MUTED)))
+                    item.setForeground(QColor(level_color(text)))
                 self.table.setItem(r, c, item)
         self._show_details()
 

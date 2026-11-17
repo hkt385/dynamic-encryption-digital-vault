@@ -9,7 +9,7 @@ from PySide6.QtCore import QEvent, QObject, QRectF, QRunnable, Qt, QThreadPool, 
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from ui.styles import ACCENT, BORDER, PANEL
+from ui import styles
 
 OVERLAY_TEXT = "Encrypting"
 
@@ -44,9 +44,9 @@ class Spinner(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w = 5
         rect = QRectF(w, w, self.width() - 2 * w, self.height() - 2 * w)
-        p.setPen(QPen(QColor(BORDER), w))
+        p.setPen(QPen(QColor(styles.color("control_stroke")), w))
         p.drawEllipse(rect)
-        pen = QPen(QColor(ACCENT), w)
+        pen = QPen(QColor(styles.color("accent")), w)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawArc(rect, -self._angle * 16, -100 * 16)
@@ -65,15 +65,14 @@ class LoadingOverlay(QWidget):
 
         card = QWidget()
         card.setObjectName("overlayCard")
-        card.setStyleSheet(f"QWidget#overlayCard {{ background: {PANEL}; border: 1px solid {BORDER};"
-                           " border-radius: 10px; }")
+        card.setAttribute(Qt.WA_StyledBackground, True)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(36, 28, 36, 28)
         cl.setSpacing(14)
         self.spinner = Spinner()
         self.label = QLabel(OVERLAY_TEXT)
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("font-size: 12pt; font-weight: 600; background: transparent;")
+        self.label.setObjectName("subtitle")
         cl.addWidget(self.spinner, 0, Qt.AlignHCenter)
         cl.addWidget(self.label)
 
@@ -113,7 +112,7 @@ class LoadingOverlay(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(10, 12, 15, 170))
+        p.fillRect(self.rect(), QColor(*styles.color("scrim")))
 
     def mousePressEvent(self, e):
         e.accept()

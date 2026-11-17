@@ -1,12 +1,13 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGridLayout, QLineEdit, QMessageBox,
+                               QPushButton, QSpinBox, QWidget)
 
 from config.config_manager import ACCOUNT_TYPES, ConfigError
 from services.auth_service import AuthError
 from ui.unlock_dialog import NewPasswordDialog, busy_cursor
+from ui.widgets import card, label, page_layout, setting_row
 
 
 class SettingsPage(QWidget):
@@ -19,54 +20,62 @@ class SettingsPage(QWidget):
         self._change_directory = change_directory   # callable(Path) -> None, raises on failure
         self._get_vault = get_vault
 
-        title = QLabel("Settings")
-        title.setObjectName("title")
-
         self.username = QLineEdit()
+        self.username.setFixedWidth(260)
         self.username.editingFinished.connect(self._save_username)
         self.account = QComboBox()
         self.account.addItems(ACCOUNT_TYPES)
+        self.account.setFixedWidth(260)
         self.account.activated.connect(self._save_account)
         self.default_dir = QLineEdit()
         self.default_dir.setReadOnly(True)
         self.vault_dir = QLineEdit()
         self.vault_dir.setReadOnly(True)
-        btn = QPushButton("Change Directory")
+        btn = QPushButton("Change folder")
         btn.clicked.connect(self._pick_directory)
         self.auto_lock = QSpinBox()
         self.auto_lock.setRange(1, 240)
         self.auto_lock.setSuffix(" min")
-        self.auto_lock.setToolTip("The vault locks itself after this long without keyboard or mouse activity.")
+        self.auto_lock.setFixedWidth(120)
+        self.auto_lock.lineEdit().setTextMargins(6, 0, 0, 0)    # style-sheet padding does not reach it
         self.auto_lock.editingFinished.connect(self._save_auto_lock)
-        self.password_btn = QPushButton("Change Password")
+        self.password_btn = QPushButton("Change password")
         self.password_btn.clicked.connect(self._change_password)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(8)
-        lay.addWidget(title)
-        for label, widget in (("USER", None), ("User Name", self.username),
-                              ("ACCOUNT TYPE", None), (None, self.account),
-                              ("STORAGE", None), ("Default Directory", self.default_dir),
-                              ("Vault Directory", self.vault_dir), (None, btn),
-                              ("SECURITY", None), ("Lock automatically when idle for", self.auto_lock),
-                              (None, self.password_btn)):
-            if label and widget is None:
-                lay.addSpacing(14)
-                lbl = QLabel(label)
-                lbl.setObjectName("sectionLabel")
-                lay.addWidget(lbl)
-            else:
-                if label:
-                    lbl = QLabel(label)
-                    lbl.setObjectName("muted")
-                    lay.addWidget(lbl)
-                if isinstance(widget, (QPushButton, QSpinBox)):
-                    lay.addWidget(widget, 0, Qt.AlignLeft)
-                else:
-                    lay.addWidget(widget)
+        folders = QWidget()                  # the two paths stacked, with the button beside them
+        fl = QGridLayout(folders)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setHorizontalSpacing(12)
+        fl.setVerticalSpacing(6)
+        for r, (text, field) in enumerate((("Vault folder", self.vault_dir), ("Created in", self.default_dir))):
+            fl.addWidget(label(text, "caption"), r, 0)
+            fl.addWidget(field, r, 1)
+        fl.setColumnStretch(1, 1)
+        storage, sl = card()
+        sl.addWidget(label("Vault location"))
+        sl.addWidget(label("Where the encrypted files and their keys are kept.", "caption"))
+        sl.addSpacing(4)
+        sl.addWidget(folders)
+        sl.addWidget(btn, 0, Qt.AlignRight)
+
+        lay, _ = page_layout(self, "Settings")
+        lay.setSpacing(4)
+        for heading, rows in (
+                ("Account", [setting_row("User name", "Shown in the side bar.", self.username),
+                             setting_row("Account type", "Enterprise vaults can also store files at the High "
+                                         "and Critical levels.", self.account)]),
+                ("Storage", [storage]),
+                ("Security", [setting_row("Lock automatically", "Lock the vault after this many minutes "
+                                          "without keyboard or mouse activity.", self.auto_lock),
+                              setting_row("Password", "Files are not re-encrypted; the recovery key stays "
+                                          "the same.", self.password_btn)])):
+            lay.addSpacing(12)
+            lay.addWidget(label(heading, "section"))
+            lay.addSpacing(4)
+            for row in rows:
+                lay.addWidget(row)
         lay.addStretch()
-        self.setMaximumWidth(620)
+        self.setMaximumWidth(860)
 
     def refresh(self):
         self.username.setText(self.config.get("username"))
@@ -119,13 +128,13 @@ class SettingsPage(QWidget):
         QMessageBox.information(self, "Change password", "The vault password was changed.")
 
     def _pick_directory(self):
-        chosen = QFileDialog.getExistingDirectory(self, "Select Vault Location",
+        chosen = QFileDialog.getExistingDirectory(self, "Choose the vault location",
                                                   self.config.get("default_directory"))
         if not chosen:
             return
         try:
             self._change_directory(Path(chosen))
         except Exception as e:  # StorageError / ConfigError carry user-safe messages
-            QMessageBox.warning(self, "Change Directory", str(e))
+            QMessageBox.warning(self, "Change folder", str(e))
             return
         self.refresh()

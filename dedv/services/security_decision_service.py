@@ -164,7 +164,7 @@ class SecurityDecisionEngine:
         d = SecurityDecision(FINAL, account_type, predicted=pred.label, confidence=pred.confidence,
                              probabilities=pred.probabilities, params=clean)
         if pred.review_required:
-            d.notes.append(f"REVIEW REQUIRED: model confidence {pred.confidence:.0%} is below 70%.")
+            d.notes.append(f"Review required: model confidence {pred.confidence:.0%} is below 70%.")
         if pred.label == "Enhanced":
             d.notes.append(f"Enhanced is not reliably predicted (validated precision "
                            f"{ENHANCED_VALIDATED_PRECISION:.2f}, recall {ENHANCED_VALIDATED_RECALL:.2f}).")

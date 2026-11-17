@@ -7,7 +7,7 @@ from config.config_manager import ConfigError, ConfigManager
 from services.storage_service import StorageError
 from ui.main_window import MainWindow
 from ui.setup_dialog import SetupDialog
-from ui.styles import STYLESHEET
+from ui import styles
 from ui.unlock_dialog import open_vault
 
 
@@ -109,8 +109,7 @@ def main() -> int:
     if len(sys.argv) >= 3 and sys.argv[1] == "--selftest":
         return selftest(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    app.setStyleSheet(STYLESHEET)
+    styles.apply(app)
 
     config = ConfigManager()
     if not config.load():

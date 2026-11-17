@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, QTimer
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QFrame, QHBoxLayout, QLabel,
-                               QMainWindow, QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+                               QMainWindow, QStackedWidget, QVBoxLayout, QWidget)
 
 from config.config_manager import ConfigManager
 from services.security_decision_service import SecurityDecisionEngine
@@ -16,8 +16,10 @@ from ui.settings_page import SettingsPage
 from ui.unlock_dialog import UnlockDialog, open_vault
 from ui.upload_page import UploadPage
 from ui.view_page import ViewPage
+from ui.widgets import GLYPHS, NavButton
 
 DEFAULT_AUTO_LOCK_MINUTES = 10
+PANE_WIDTH = 248
 _ACTIVITY = (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.Wheel)
 
 
@@ -36,17 +38,31 @@ class MainWindow(QMainWindow):
         if geo:
             self.restoreGeometry(geo)
 
-        # Sidebar
+        # Side bar: account card, pages, and Lock / Settings / Developer at the bottom (Windows 11 style)
         sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(180)
+        sidebar.setObjectName("navPane")
+        sidebar.setFixedWidth(PANE_WIDTH)
         sl = QVBoxLayout(sidebar)
-        sl.setContentsMargins(12, 20, 12, 16)
+        sl.setContentsMargins(8, 16, 8, 12)
         sl.setSpacing(4)
-        brand = QLabel("DEDV")
-        brand.setObjectName("brand")
-        sl.addWidget(brand)
-        sl.addSpacing(18)
+        self.avatar = QLabel()
+        self.avatar.setObjectName("avatar")
+        self.avatar.setFixedSize(36, 36)
+        self.avatar.setAlignment(Qt.AlignCenter)
+        self.user_label = QLabel()
+        self.user_label.setObjectName("accountName")
+        self.path_label = QLabel()
+        self.path_label.setObjectName("accountPath")
+        names = QVBoxLayout()
+        names.setSpacing(0)
+        names.addWidget(self.user_label)
+        names.addWidget(self.path_label)
+        account = QHBoxLayout()
+        account.setContentsMargins(8, 0, 8, 16)
+        account.setSpacing(12)
+        account.addWidget(self.avatar)
+        account.addLayout(names, 1)
+        sl.addLayout(account)
 
         # Prediction engine (model loaded once) and the shared "Encrypting" overlay/runner.
         self.engine = SecurityDecisionEngine()
@@ -73,54 +89,41 @@ class MainWindow(QMainWindow):
         self.settings_page.changed.connect(self._restart_idle_timer)
         self.stack = QStackedWidget()
 
+        self.lock_btn = NavButton("Lock vault", GLYPHS["lock"], checkable=False)
+        self.lock_btn.setToolTip("Lock the vault now. The password is needed to open it again.")
+        self.lock_btn.clicked.connect(self.lock_vault)
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for i, (label, page) in enumerate((("View", self.view_page), ("Upload", self.upload_page),
-                                           ("Edit", self.edit_page), ("Settings", self.settings_page),
-                                           ("Developer", self.developer_page))):
+        for i, (label, glyph, page) in enumerate((("View", "view", self.view_page),
+                                                  ("Upload", "upload", self.upload_page),
+                                                  ("Edit", "edit", self.edit_page),
+                                                  ("Settings", "settings", self.settings_page),
+                                                  ("Developer", "developer", self.developer_page))):
             self.stack.addWidget(page)
-            b = QPushButton(label)
-            b.setObjectName("nav")
-            b.setCheckable(True)
+            b = NavButton(label, GLYPHS[glyph])
             group.addButton(b, i)
+            if i == 3:                         # Settings and Developer sit at the bottom, under Lock
+                sl.addStretch()
+                sl.addWidget(self.lock_btn)
             sl.addWidget(b)
             if i == 0:
                 b.setChecked(True)
         group.idClicked.connect(self._navigate)
-        sl.addStretch()
 
-        # Top bar
-        topbar = QFrame()
-        topbar.setObjectName("topbar")
-        topbar.setFixedHeight(52)
-        tl = QHBoxLayout(topbar)
-        tl.setContentsMargins(28, 0, 28, 0)
-        self.user_label = QLabel()
-        self.path_label = QLabel()
-        self.path_label.setObjectName("muted")
-        self.lock_btn = QPushButton("Lock")
-        self.lock_btn.setToolTip("Lock the vault now. The password is needed to open it again.")
-        self.lock_btn.clicked.connect(self.lock_vault)
-        tl.addWidget(self.user_label)
-        tl.addStretch()
-        tl.addWidget(self.path_label)
-        tl.addWidget(self.lock_btn)
-
-        right = QWidget()
-        right.setObjectName("root")
-        rl = QVBoxLayout(right)
+        content = QWidget()                    # the pages sit on a layer with a rounded corner
+        content.setObjectName("content")
+        content.setAttribute(Qt.WA_StyledBackground, True)
+        rl = QVBoxLayout(content)
         rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(0)
-        rl.addWidget(topbar)
-        rl.addWidget(self.stack, 1)
+        rl.addWidget(self.stack)
 
         central = QWidget()
         central.setObjectName("root")
         cl = QHBoxLayout(central)
-        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setContentsMargins(0, 8, 0, 0)
         cl.setSpacing(0)
         cl.addWidget(sidebar)
-        cl.addWidget(right, 1)
+        cl.addWidget(content, 1)
         self.setCentralWidget(central)
 
         # Auto-lock: any key or mouse activity anywhere in the application restarts the timer.
@@ -155,8 +158,12 @@ class MainWindow(QMainWindow):
         self._restart_idle_timer()
 
     def _update_topbar(self):
-        self.user_label.setText(self.config.get("username"))
-        self.path_label.setText(self.config.get("vault_directory"))
+        name, path = self.config.get("username") or "", self.config.get("vault_directory") or ""
+        self.avatar.setText(name[:1].upper() or "?")
+        self.user_label.setText(name)
+        width = PANE_WIDTH - 16 - 16 - 36 - 12          # pane minus margins, avatar and gap
+        self.path_label.setText(self.path_label.fontMetrics().elidedText(path, Qt.ElideMiddle, width))
+        self.path_label.setToolTip(path)
         self.lock_btn.setEnabled(self.vault is not None)
 
     def _navigate(self, index: int):

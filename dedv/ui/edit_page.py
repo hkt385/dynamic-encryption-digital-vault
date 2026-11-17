@@ -1,5 +1,6 @@
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QComboBox, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+                               QWidget)
 
 from models.file_metadata import format_size
 from services.encryption_service import LEVEL_ALGORITHM, algorithm_name
@@ -7,6 +8,7 @@ from services.security_decision_service import account_levels, floor_level
 from services.storage_service import StorageError
 from services.vault_service import OperationError
 from ui.upload_page import fill_levels
+from ui.widgets import InfoBar, card, label, page_layout
 
 
 class EditPage(QWidget):
@@ -21,13 +23,6 @@ class EditPage(QWidget):
         self.runner = runner
         self._files = []
 
-        title = QLabel("Edit")
-        title.setObjectName("title")
-        intro = QLabel("Change the encryption level of a file that is already in the vault. "
-                       "The file is decrypted and encrypted again with the new algorithm.")
-        intro.setObjectName("muted")
-        intro.setWordWrap(True)
-
         self.file_combo = QComboBox()
         self.file_combo.activated.connect(self._show_selected)
         self.details = {}
@@ -35,42 +30,33 @@ class EditPage(QWidget):
         self.target.activated.connect(lambda _=0: self._update_button())
         self.button = QPushButton("Re-encrypt")
         self.button.setObjectName("primary")
+        self.button.setMinimumWidth(120)
         self.button.clicked.connect(self.reencrypt)
-        self.status = QLabel()
-        self.status.setObjectName("muted")
-        self.status.setWordWrap(True)
+        self.status = InfoBar()
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(8)
-        lay.addWidget(title)
-        lay.addWidget(intro)
-        lay.addSpacing(8)
-        self._add(lay, "FILE", self.file_combo)
+        # One card: pick the file, see where it stands, pick the new level.
+        box, grid = card(QGridLayout, margins=(16, 16, 16, 16), spacing=10)
+        grid.setColumnMinimumWidth(0, 160)
+        grid.setColumnStretch(1, 1)
+        rows = [("File", self.file_combo)]
         for key in ("File name", "Current algorithm", "Current security level", "Type", "Size"):
-            label = QLabel()
-            self.details[key] = label
-            lay.addWidget(self._caption(key))
-            lay.addWidget(label)
-        self._add(lay, "NEW SECURITY LEVEL", self.target)
-        lay.addSpacing(6)
-        lay.addWidget(self.button)
+            self.details[key] = QLabel()
+            rows.append((key, self.details[key]))
+        rows.append(("New security level", self.target))
+        for r, (text, widget) in enumerate(rows):
+            grid.addWidget(label(text, "muted"), r, 0)
+            grid.addWidget(widget, r, 1)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        bottom.addWidget(self.button)
+        lay, _ = page_layout(self, "Edit", "Change the security level of a file that is already in the vault. "
+                                           "The file is decrypted and encrypted again with the new algorithm.")
+        lay.addWidget(box)
+        lay.addLayout(bottom)
         lay.addWidget(self.status)
         lay.addStretch()
-        self.setMaximumWidth(620)
-
-    @staticmethod
-    def _caption(text: str) -> QLabel:
-        c = QLabel(text)
-        c.setObjectName("muted")
-        return c
-
-    def _add(self, lay, text, widget):
-        lay.addSpacing(8)
-        c = QLabel(text)
-        c.setObjectName("sectionLabel")
-        lay.addWidget(c)
-        lay.addWidget(widget)
+        self.setMaximumWidth(760)
 
     # ---- state ---------------------------------------------------------------------------------
     def refresh(self, keep_id: str | None = None):
@@ -81,7 +67,7 @@ class EditPage(QWidget):
             self._files = sorted(vault.list_files(), key=lambda m: m.original_name.lower()) if vault else []
         except StorageError as e:
             self._files = []
-            self.status.setText(str(e))
+            self.status.setText(str(e), "error")
         self.file_combo.clear()
         for m in self._files:
             self.file_combo.addItem(m.original_name, m.file_id)
@@ -148,7 +134,7 @@ class EditPage(QWidget):
 
         def failed(message):
             self._update_button()
-            self.status.setText(message)
+            self.status.setText(message, "error")
             QMessageBox.warning(self, "Re-encrypt", message if not message.startswith("OperationError: ")
                                 else message[len("OperationError: "):])
 

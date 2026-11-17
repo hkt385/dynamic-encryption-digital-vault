@@ -367,7 +367,7 @@ def test_verify_audit_log_button(qapp, tmp_path):
     with vault.db as conn:
         conn.execute("UPDATE audit_log SET detail='edited' WHERE id=2")
     page.verify_btn.click()
-    assert "DAMAGED" in page.audit_result.text() and "entry 2 of 3" in page.audit_result.text()
+    assert "damaged" in page.audit_result.text() and "entry 2 of 3" in page.audit_result.text()
     assert not DeveloperPage().verify_btn.isEnabled()            # no vault open
 
 

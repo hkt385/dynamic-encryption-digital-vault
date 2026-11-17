@@ -1,0 +1,12 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file>chevron-down-dark.png</file>
+    <file>chevron-down-dark@2x.png</file>
+    <file>chevron-up-dark.png</file>
+    <file>chevron-up-dark@2x.png</file>
+    <file>chevron-down-light.png</file>
+    <file>chevron-down-light@2x.png</file>
+    <file>chevron-up-light.png</file>
+    <file>chevron-up-light@2x.png</file>
+  </qresource>
+</RCC>
