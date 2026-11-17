@@ -6,7 +6,7 @@ from services.ml_model_service import FEATURES, MLModelService
 
 
 class ParameterBar(QFrame):
-    """Model-input dropdowns shown above every page. Options come from the model itself.
+    r"""Model-input dropdowns shown above every page. Options come from the model itself.
 
     Selections are saved to the application settings file (%APPDATA%\DEDV\settings.json)
     on every user change and validated when restored. The bar lives outside the page stack,
