@@ -5,7 +5,8 @@ percentage or time estimate by design.
 """
 import traceback
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import (QEvent, QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, QVariantAnimation,
+                            Signal)
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -80,6 +81,16 @@ class LoadingOverlay(QWidget):
         lay.setAlignment(Qt.AlignCenter)
         lay.addWidget(card)
         window.installEventFilter(self)
+        self._dim = 1.0                        # scrim strength; fades in (CSS: opacity transition)
+        self._fade = QVariantAnimation(self)
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.setEasingCurve(styles.ease())
+        self._fade.valueChanged.connect(self._set_dim)
+
+    def _set_dim(self, value):
+        self._dim = float(value)
+        self.update()
 
     @property
     def active(self) -> bool:
@@ -93,7 +104,12 @@ class LoadingOverlay(QWidget):
         if central:
             central.setEnabled(False)
         self.raise_()
+        ms = styles.motion(styles.FAST)
+        self._dim = 0.0 if ms else 1.0
         self.show()
+        if ms:
+            self._fade.setDuration(ms)
+            self._fade.start()
         self.spinner.start()
         self.setFocus()
 
@@ -112,7 +128,8 @@ class LoadingOverlay(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(*styles.color("scrim")))
+        r, g, b, a = styles.color("scrim")
+        p.fillRect(self.rect(), QColor(r, g, b, int(a * self._dim)))
 
     def mousePressEvent(self, e):
         e.accept()

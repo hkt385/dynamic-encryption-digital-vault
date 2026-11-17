@@ -3,9 +3,17 @@
 Colours follow the Windows light/dark setting (and switch live); the accent is the standard Windows
 blue rather than the user's accent, which may be grey and would make the main button look disabled.
 Sizes follow the Windows type ramp (14 px body, 12 px caption, 20 px subtitle, 28 px title) and
-geometry (4 px control corners, 8 px for cards and the content layer).
+geometry (4 px control corners, 8 px for cards and the content layer). On Windows 11 the main window
+sits on Mica and dialogs on Acrylic (ui/backdrop.py).
+
+Motion uses the Fluent timings and curve, so the web version can reuse them as CSS
+(`transition: opacity 167ms cubic-bezier(0, 0, 0, 1)`). Only opacity and position are animated,
+never anything that re-lays out text, and nothing animates while idle.
 """
-from PySide6.QtCore import Qt
+import ctypes
+import sys
+
+from PySide6.QtCore import QEasingCurve, QPointF, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
 
 from ui import icons_rc  # noqa: F401  registers :/icons/ (chevrons drawn from Segoe Fluent Icons E70D/E70E;
@@ -13,14 +21,14 @@ from ui import icons_rc  # noqa: F401  registers :/icons/ (chevrons drawn from S
 
 THEMES = {
     "dark": dict(
-        bg="#202020", layer="#272727", layer_stroke="#1c1c1c", card="#2b2b2b", card_stroke="#1d1d1d",
+        bg="#202020", layer="#272727", layer_mica="#4c3a3a3a", layer_stroke="#1c1c1c", card="#2b2b2b", card_stroke="#1d1d1d",
         control="#2d2d2d", control_hover="#323232", control_pressed="#272727", control_disabled="#262626",
         control_stroke="#353535", control_stroke_bottom="#2a2a2a", input_line="#9a9a9a",
         input_focus="#1f1f1f", subtle_hover="#2d2d2d", subtle_selected="#2d2d2d", divider="#353535",
         text="#ffffff", text2="#c5c5c5", text3="#9e9e9e", disabled="#717171",
         accent="#60cdff", accent_hover="#5bbdea", accent_pressed="#56a9d1", on_accent="#000000",
         accent_disabled="#434343", on_accent_disabled="#a7a7a7", selection="#0078d4",
-        scroll="#9f9f9f", scrim=(0, 0, 0, 140),
+        scroll="#9f9f9f", scrim=(0, 0, 0, 140), nav_fill=(255, 255, 255, 15), shadow=None,
         info_bg="#2b2b2b", info_stroke="#353535",
         success="#6ccb5f", success_bg="#393d1b", warning="#fce100", warning_bg="#433519",
         error="#ff99a4", error_bg="#442726",
@@ -28,14 +36,14 @@ THEMES = {
                 "Critical": "#ff99a4", "High/Critical": "#ff99a4"},
     ),
     "light": dict(
-        bg="#f3f3f3", layer="#f9f9f9", layer_stroke="#e5e5e5", card="#ffffff", card_stroke="#e5e5e5",
+        bg="#f3f3f3", layer="#f9f9f9", layer_mica="#80ffffff", layer_stroke="#e5e5e5", card="#ffffff", card_stroke="#e5e5e5",
         control="#fbfbfb", control_hover="#f6f6f6", control_pressed="#f2f2f2", control_disabled="#f5f5f5",
         control_stroke="#e3e3e3", control_stroke_bottom="#cdcdcd", input_line="#868686",
         input_focus="#ffffff", subtle_hover="#eaeaea", subtle_selected="#e6e6e6", divider="#e5e5e5",
         text="#1b1b1b", text2="#5f5f5f", text3="#8a8a8a", disabled="#a0a0a0",
         accent="#005fb8", accent_hover="#196cba", accent_pressed="#3380c4", on_accent="#ffffff",
         accent_disabled="#c5c5c5", on_accent_disabled="#ffffff", selection="#0078d4",
-        scroll="#8a8a8a", scrim=(0, 0, 0, 80),
+        scroll="#8a8a8a", scrim=(0, 0, 0, 80), nav_fill=(0, 0, 0, 10), shadow=(0, 0, 0, 2),
         info_bg="#ffffff", info_stroke="#e5e5e5",
         success="#0f7b0f", success_bg="#dff6dd", warning="#9d5d00", warning_bg="#fff4ce",
         error="#c42b1c", error_bg="#fde7e9",
@@ -46,6 +54,36 @@ THEMES = {
 
 _theme = THEMES["dark"]
 _hooked = False
+_mica = False
+_motion = False          # off until apply(): tests and --selftest run without animations
+
+# Fluent motion ("Timing and easing", learn.microsoft.com): durations in ms and the
+# "fast out, slow in" curve for anything entering or moving into place.
+FASTER, FAST, NORMAL = 83, 167, 250
+ENTER = (0.0, 0.0, 0.0, 1.0)            # CSS: cubic-bezier(0, 0, 0, 1)
+
+
+def motion(ms: int) -> int:
+    """Animation length, or 0 when Windows "Animation effects" is off (reduced motion)."""
+    return ms if _motion else 0
+
+
+def ease() -> QEasingCurve:
+    c = QEasingCurve(QEasingCurve.BezierSpline)
+    c.addCubicBezierSegment(QPointF(*ENTER[:2]), QPointF(*ENTER[2:]), QPointF(1, 1))
+    return c
+
+
+def _windows_animations() -> bool:
+    if sys.platform != "win32":
+        return True
+    on = ctypes.c_int(1)
+    ok = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0)  # SPI_GETCLIENTAREAANIMATION
+    return bool(on.value) if ok else True
+
+
+def is_dark() -> bool:
+    return _theme is THEMES["dark"]
 
 
 def color(name: str) -> str:
@@ -86,11 +124,13 @@ def _palette(t: dict) -> QPalette:
 def _stylesheet(t: dict, name: str, display: str, small: str, icons: str) -> str:
     return f"""
 QMainWindow, QDialog, QMessageBox {{ background: {t['bg']}; }}
+*[backdrop="true"] {{ background: transparent; }}   /* windows on Mica / Acrylic (ui/backdrop.py) */
 QWidget#page, QWidget#root {{ background: transparent; }}
 QWidget#content {{
-    background: {t['layer']}; border: 1px solid {t['layer_stroke']}; border-right: none; border-bottom: none;
-    border-top-left-radius: 8px;
+    background: {t['layer_mica'] if _mica else t['layer']}; border: 1px solid {t['layer_stroke']};
+    border-right: none; border-bottom: none; border-top-left-radius: 8px;
 }}
+QWidget#navPill {{ background: {t['accent']}; border-radius: 1px; }}
 QLabel {{ background: transparent; }}
 QLabel#muted {{ color: {t['text2']}; }}
 QLabel#caption {{ color: {t['text2']}; font-family: "{small}"; font-size: 12px; }}
@@ -112,13 +152,7 @@ QLabel#avatar {{
 }}
 QLabel#accountName {{ font-weight: 600; }}
 QLabel#accountPath {{ color: {t['text2']}; font-family: "{small}"; font-size: 12px; }}
-QPushButton#nav {{
-    background: transparent; border: none; border-radius: 4px; min-height: 36px;
-    padding: 0 12px 0 44px; text-align: left; color: {t['text']};
-}}
-QPushButton#nav:hover {{ background: {t['subtle_hover']}; }}
-QPushButton#nav:checked {{ background: {t['subtle_selected']}; }}
-QPushButton#nav:disabled {{ color: {t['disabled']}; background: transparent; }}
+QPushButton#nav {{ background: transparent; border: none; min-height: 36px; padding: 0 12px 0 44px; }}
 
 /* Buttons */
 QPushButton {{
@@ -210,18 +244,22 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
 def apply(app) -> None:
     """Theme the whole application from the Windows light/dark setting; re-applied when it changes."""
-    global _theme, _hooked
+    global _theme, _hooked, _mica, _motion
+    from ui import backdrop
     hints = app.styleHints()
     name = "dark" if hints.colorScheme() == Qt.ColorScheme.Dark else "light"
     _theme = THEMES[name]
+    _motion = _windows_animations()
     if not _hooked:
         app.setStyle("Fusion")
+        _mica = backdrop.install(app)            # Windows 11 22H2+ only; solid colours otherwise
     font = QFont(_family("Segoe UI Variable Text", "Segoe UI"))
     font.setPixelSize(14)
     app.setFont(font)
     app.setPalette(_palette(_theme))
     app.setStyleSheet(_stylesheet(_theme, name, _family("Segoe UI Variable Display", "Segoe UI"),
                                   _family("Segoe UI Variable Small", "Segoe UI"), icon_family()))
+    backdrop.refresh()                           # light/dark Mica and title bars of open windows
     if not _hooked:
         hints.colorSchemeChanged.connect(lambda _scheme: apply(app))
         _hooked = True

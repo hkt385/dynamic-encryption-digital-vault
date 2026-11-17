@@ -335,6 +335,8 @@ def test_windows_theme_follows_light_and_dark(qapp, monkeypatch):
     from ui import styles
     from ui.widgets import InfoBar
     font, palette = qapp.font(), qapp.palette()
+    monkeypatch.setattr(styles, "_theme", styles._theme)            # restored afterwards
+    monkeypatch.setattr(styles, "_motion", False)
     try:
         for scheme, name in ((Qt.ColorScheme.Dark, "dark"), (Qt.ColorScheme.Light, "light")):
             monkeypatch.setattr(QStyleHints, "colorScheme", lambda self, s=scheme: s)
@@ -353,6 +355,58 @@ def test_windows_theme_follows_light_and_dark(qapp, monkeypatch):
         qapp.setStyleSheet("")
         qapp.setFont(font)
         qapp.setPalette(palette)
+
+
+def test_light_theme_cards_cast_a_soft_shadow(qapp, monkeypatch):
+    from PySide6.QtGui import QStyleHints
+    from ui import styles
+    from ui.widgets import card
+    font, palette = qapp.font(), qapp.palette()
+    monkeypatch.setattr(styles, "_theme", styles._theme)
+    monkeypatch.setattr(styles, "_motion", False)
+    monkeypatch.setattr(QStyleHints, "colorScheme", lambda self: Qt.ColorScheme.Light)
+    try:
+        styles.apply(qapp)
+        host = QWidget()
+        host.setAutoFillBackground(True)
+        host.resize(300, 200)
+        box, _ = card()
+        box.setParent(host)
+        box.setGeometry(50, 50, 200, 80)
+        host.show()
+        qapp.processEvents()
+        img = host.grab().toImage()
+        assert img.pixelColor(150, 133).lightness() < img.pixelColor(150, 190).lightness()   # just under the card
+    finally:
+        qapp.setStyleSheet("")
+        qapp.setFont(font)
+        qapp.setPalette(palette)
+
+
+def test_side_bar_collapses_and_animations_settle(qapp, tmp_path, monkeypatch):
+    from ui import styles
+    from ui.main_window import COMPACT_WIDTH, PANE_WIDTH
+    monkeypatch.setattr(styles, "_motion", True)           # as on a PC with Windows animation effects on
+    cfg = ConfigManager(tmp_path / "settings.json")
+    cfg.update(username="u", account_type="Enterprise", default_directory=str(tmp_path),
+               vault_directory=str(tmp_path / "DEDV"))
+    win = MainWindow(cfg, new_vault(tmp_path / "DEDV"))
+    win.resize(1280, 800)
+    win.show()
+    win.set_compact(False, animate=False)
+    win.set_compact(True)
+    assert wait_until(lambda: win.sidebar.width() == COMPACT_WIDTH, 5)
+    assert win.user_label.isHidden() and win.nav.button(1).toolTip() == "Upload"     # labels become tooltips
+    win._navigate(1)
+    page, btn = win.upload_page, win.nav.button(1)
+    assert page.graphicsEffect() is not None                             # fading in
+    assert wait_until(lambda: page.graphicsEffect() is None, 5)          # then painted directly again
+    assert page.pos().y() == 0
+    assert wait_until(lambda: win.pill.y() == btn.y() + (btn.height() - win.pill.height()) // 2, 5)
+    win.set_compact(False)
+    assert wait_until(lambda: win.sidebar.width() == PANE_WIDTH and not win.user_label.isHidden(), 5)
+    assert win.nav.button(1).toolTip() == ""
+    win.hide()                                                           # no close: keeps QSettings untouched
 
 
 def test_viewer_zoom(qapp):

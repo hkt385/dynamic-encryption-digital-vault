@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QTextBrowse
 from paths import docs_dir
 from services import migration_service
 from services.storage_service import StorageError
-from ui.widgets import InfoBar, page_layout
+from ui.widgets import InfoBar, elevate, page_layout
 
 DOC_NAME = "DEVELOPER_INSTRUCTIONS.md"
 
@@ -29,7 +29,7 @@ class DeveloperPage(QWidget):
         row.addWidget(self.old_key_btn)
         row.addStretch()
 
-        self.browser = QTextBrowser()
+        self.browser = elevate(QTextBrowser())
         self.browser.setOpenExternalLinks(False)
         lay, _ = page_layout(self, "Developer", "Check the audit log and read how DEDV is built.")
         lay.addLayout(row)

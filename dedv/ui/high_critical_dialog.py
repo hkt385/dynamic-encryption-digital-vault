@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from services.security_decision_service import HIGH_CRITICAL_OPTIONS
+from ui import backdrop
 
 
 class HighCriticalDialog(QDialog):
@@ -8,6 +9,7 @@ class HighCriticalDialog(QDialog):
 
     def __init__(self, file_name: str, parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.setWindowTitle("Choose security level")
         self.setModal(True)
         self.setMinimumWidth(520)

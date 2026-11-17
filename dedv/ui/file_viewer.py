@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QDialog, QGraphicsScene, QGraphicsView, QHBoxLayo
                                QPlainTextEdit, QPushButton, QVBoxLayout)
 
 from services.viewer_service import IMAGE, MAX_TEXT_BYTES, PDF, TEXT
+from ui import backdrop
 
 ZOOM_STEP = 1.25
 ZOOM_MIN, ZOOM_MAX = 0.05, 8.0
@@ -19,6 +20,7 @@ class FileViewerDialog(QDialog):
 
     def __init__(self, name: str, kind: str, data: bytes, parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.setWindowTitle(name)
         self.resize(900, 650)
         self._data = data

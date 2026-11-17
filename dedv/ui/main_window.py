@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QSettings, Qt, QTimer, QVariantAnimation
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QStackedWidget, QVBoxLayout, QWidget)
 
@@ -16,11 +16,25 @@ from ui.settings_page import SettingsPage
 from ui.unlock_dialog import UnlockDialog, open_vault
 from ui.upload_page import UploadPage
 from ui.view_page import ViewPage
-from ui.widgets import GLYPHS, NavButton
+from ui import styles
+from ui.widgets import GLYPHS, NavButton, enter
+from ui import backdrop
 
 DEFAULT_AUTO_LOCK_MINUTES = 10
-PANE_WIDTH = 248
+PANE_WIDTH, COMPACT_WIDTH = 248, 56            # expanded side bar / icon rail
 _ACTIVITY = (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.Wheel)
+
+
+class _NavPane(QFrame):
+    """Side bar; reports size changes so the selection pill can follow its entry."""
+
+    def __init__(self, on_resize):
+        super().__init__()
+        self._on_resize = on_resize
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._on_resize()
 
 
 class MainWindow(QMainWindow):
@@ -28,6 +42,7 @@ class MainWindow(QMainWindow):
         """`vault` is an open, unlocked vault (ui.unlock_dialog.open_vault), or None if the
         configured vault could not be opened; Settings can then pick another location."""
         super().__init__()
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.config = config
         self.vault = vault
         self.setWindowTitle("Dynamic Encryption Digital Vault")
@@ -38,13 +53,18 @@ class MainWindow(QMainWindow):
         if geo:
             self.restoreGeometry(geo)
 
-        # Side bar: account card, pages, and Lock / Settings / Developer at the bottom (Windows 11 style)
-        sidebar = QFrame()
+        # Side bar on Mica: menu button, account card, pages, and Lock / Settings / Developer at the
+        # bottom. It collapses to an icon rail; the accent pill slides to the selected page.
+        self.sidebar = sidebar = _NavPane(lambda: self._place_pill())
         sidebar.setObjectName("navPane")
         sidebar.setFixedWidth(PANE_WIDTH)
         sl = QVBoxLayout(sidebar)
-        sl.setContentsMargins(8, 16, 8, 12)
+        sl.setContentsMargins(8, 8, 8, 12)
         sl.setSpacing(4)
+        self.menu_btn = NavButton("", GLYPHS["menu"], checkable=False)
+        self.menu_btn.clicked.connect(lambda: self.set_compact(not self.compact, animate=True))
+        sl.addWidget(self.menu_btn)
+        sl.addSpacing(4)
         self.avatar = QLabel()
         self.avatar.setObjectName("avatar")
         self.avatar.setFixedSize(36, 36)
@@ -58,7 +78,7 @@ class MainWindow(QMainWindow):
         names.addWidget(self.user_label)
         names.addWidget(self.path_label)
         account = QHBoxLayout()
-        account.setContentsMargins(8, 0, 8, 16)
+        account.setContentsMargins(2, 0, 2, 16)        # avatar centred on the icons in both widths
         account.setSpacing(12)
         account.addWidget(self.avatar)
         account.addLayout(names, 1)
@@ -92,7 +112,7 @@ class MainWindow(QMainWindow):
         self.lock_btn = NavButton("Lock vault", GLYPHS["lock"], checkable=False)
         self.lock_btn.setToolTip("Lock the vault now. The password is needed to open it again.")
         self.lock_btn.clicked.connect(self.lock_vault)
-        group = QButtonGroup(self)
+        self.nav = group = QButtonGroup(self)
         group.setExclusive(True)
         for i, (label, glyph, page) in enumerate((("View", "view", self.view_page),
                                                   ("Upload", "upload", self.upload_page),
@@ -109,6 +129,18 @@ class MainWindow(QMainWindow):
             if i == 0:
                 b.setChecked(True)
         group.idClicked.connect(self._navigate)
+        self.pill = QWidget(sidebar)
+        self.pill.setObjectName("navPill")
+        self.pill.setAttribute(Qt.WA_StyledBackground, True)
+        self.pill.resize(3, 16)
+        self._pill_anim = QPropertyAnimation(self.pill, b"pos", self)
+        self._pill_anim.setEasingCurve(styles.ease())
+        self._rail_anim = QVariantAnimation(self)
+        self._rail_anim.setEasingCurve(styles.ease())
+        self._rail_anim.valueChanged.connect(lambda w: sidebar.setFixedWidth(int(w)))
+        self._rail_anim.finished.connect(self._rail_settled)
+        self.compact = False
+        self.set_compact(self._settings.value("navCompact", False, type=bool), animate=False)
 
         content = QWidget()                    # the pages sit on a layer with a rounded corner
         content.setObjectName("content")
@@ -157,16 +189,62 @@ class MainWindow(QMainWindow):
         self._refresh_pages()
         self._restart_idle_timer()
 
+    # ---- side bar --------------------------------------------------------------------------------
+    def set_compact(self, compact: bool, animate: bool = True):
+        """Collapse the side bar to an icon rail (labels become tooltips) or expand it again."""
+        self.compact = compact
+        self.menu_btn.setToolTip("Expand navigation" if compact else "Collapse navigation")
+        for b in self.nav.buttons():
+            b.setToolTip(b.text() if compact else "")
+        if compact:                         # account text goes first, and comes back once expanded
+            self.user_label.hide()
+            self.path_label.hide()
+        target = COMPACT_WIDTH if compact else PANE_WIDTH
+        ms = styles.motion(styles.NORMAL) if animate else 0
+        self._rail_anim.stop()
+        if ms:
+            self._rail_anim.setDuration(ms)
+            self._rail_anim.setStartValue(self.sidebar.width())
+            self._rail_anim.setEndValue(target)
+            self._rail_anim.start()
+        else:
+            self.sidebar.setFixedWidth(target)
+            self._rail_settled()
+
+    def _rail_settled(self):
+        if not self.compact:
+            self.user_label.show()
+            self.path_label.show()
+        self._place_pill()
+
+    def _place_pill(self, animate: bool = False):
+        """Accent pill beside the selected page; slides there when the page changes."""
+        btn = self.nav.checkedButton() if hasattr(self, "pill") else None
+        if btn is None:
+            return
+        target = QPoint(btn.x(), btn.y() + (btn.height() - self.pill.height()) // 2)
+        self.pill.raise_()
+        self._pill_anim.stop()
+        ms = styles.motion(styles.NORMAL) if animate and self.isVisible() else 0
+        if ms:
+            self._pill_anim.setDuration(ms)
+            self._pill_anim.setStartValue(self.pill.pos())
+            self._pill_anim.setEndValue(target)
+            self._pill_anim.start()
+        else:
+            self.pill.move(target)
+
     def _update_topbar(self):
         name, path = self.config.get("username") or "", self.config.get("vault_directory") or ""
         self.avatar.setText(name[:1].upper() or "?")
         self.user_label.setText(name)
-        width = PANE_WIDTH - 16 - 16 - 36 - 12          # pane minus margins, avatar and gap
+        width = PANE_WIDTH - 16 - 4 - 36 - 12          # pane minus margins, avatar and gap
         self.path_label.setText(self.path_label.fontMetrics().elidedText(path, Qt.ElideMiddle, width))
         self.path_label.setToolTip(path)
         self.lock_btn.setEnabled(self.vault is not None)
 
     def _navigate(self, index: int):
+        self.nav.button(index).setChecked(True)
         self.stack.setCurrentIndex(index)
         if index == 0:
             self.view_page.refresh()
@@ -174,6 +252,8 @@ class MainWindow(QMainWindow):
             self.edit_page.refresh()
         elif index == 4:
             self.developer_page.refresh()
+        self._place_pill(animate=True)
+        enter(self.stack.currentWidget())
 
     # ---- locking -------------------------------------------------------------------------------
     def _restart_idle_timer(self):
@@ -229,4 +309,5 @@ class MainWindow(QMainWindow):
             self.vault.close()
             self.vault = None
         self._settings.setValue("geometry", self.saveGeometry())
+        self._settings.setValue("navCompact", self.compact)
         super().closeEvent(e)

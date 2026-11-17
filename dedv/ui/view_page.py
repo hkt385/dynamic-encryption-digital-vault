@@ -12,7 +12,7 @@ from services.vault_service import OperationError
 from services.viewer_service import BLOCKED, EXTERNAL, TempFiles, classify
 from ui.file_viewer import FileViewerDialog
 from ui.styles import level_color
-from ui.widgets import page_layout
+from ui.widgets import elevate, page_layout
 
 COLUMNS = ("Name", "Type", "Size", "Date added", "Predicted", "Algorithm", "Security level")
 LEVEL_COLUMN = len(COLUMNS) - 1
@@ -25,7 +25,7 @@ class ViewPage(QWidget):
         self._get_vault = get_vault
         self.temp_files = temp_files or TempFiles()
 
-        self.table = QTableWidget(0, len(COLUMNS))
+        self.table = elevate(QTableWidget(0, len(COLUMNS)))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)   # read-only
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -55,7 +55,7 @@ class ViewPage(QWidget):
         el.addWidget(s)
 
         # Details of the selected file: the decision recorded when it was stored.
-        self.details = QLabel()             # styled as a card itself: a wrapped label nested in a
+        self.details = elevate(QLabel())    # styled as a card itself: a wrapped label nested in a
         self.details.setObjectName("detailsCard")   # card frame does not get its full height
         self.details.setWordWrap(True)
         self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QLa
 
 from config.config_manager import ACCOUNT_TYPES
 from services.storage_service import StorageError, create_vault
+from ui import backdrop
 
 
 class SetupDialog(QDialog):
@@ -12,6 +13,7 @@ class SetupDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.setWindowTitle("Welcome to DEDV")
         self.setMinimumWidth(480)
         self.result: dict | None = None

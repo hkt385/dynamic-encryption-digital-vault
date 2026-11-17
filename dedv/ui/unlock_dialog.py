@@ -12,6 +12,7 @@ from services.auth_service import (MIN_PASSWORD_LENGTH, AuthError, AuthSession, 
                                    password_strength)
 from services.storage_service import StorageError
 from services.vault_service import VaultService
+from ui import backdrop
 
 
 @contextmanager
@@ -38,6 +39,7 @@ class NewPasswordDialog(QDialog):
 
     def __init__(self, title: str, intro: str, first: str = "", parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.setWindowTitle(title)
         self.setMinimumWidth(480)
         self.password = self.first_value = ""
@@ -97,6 +99,7 @@ class RecoveryKeyDialog(QDialog):
 
     def __init__(self, recovery_key: str, parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.setWindowTitle("Your recovery key")
         self.setMinimumWidth(560)
         heading = QLabel("Save your recovery key")
@@ -141,6 +144,7 @@ class UnlockDialog(QDialog):
 
     def __init__(self, session: AuthSession, vault_path: str = "", parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.session = session
         self.setWindowTitle("Unlock DEDV")
         self.setMinimumWidth(460)

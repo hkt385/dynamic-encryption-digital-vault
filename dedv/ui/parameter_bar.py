@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QComboBox, QFrame, QGridLayout, QLabel, QVBoxLayou
 
 from config.config_manager import ConfigError, ConfigManager
 from services.ml_model_service import FEATURES, MLModelService
+from ui.widgets import elevate
 
 
 class ParameterBar(QFrame):
@@ -17,6 +18,7 @@ class ParameterBar(QFrame):
     def __init__(self, config: ConfigManager, model: MLModelService | None, load_error: str = ""):
         super().__init__()
         self.setObjectName("card")
+        elevate(self)
         self.config = config
         self.model = model
         self.combos: dict[str, QComboBox] = {}

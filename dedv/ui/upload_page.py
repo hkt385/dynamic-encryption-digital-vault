@@ -13,7 +13,7 @@ from services.security_decision_service import (CHOICE_REQUIRED, ERROR, UNSUPPOR
 from ui.high_critical_dialog import HighCriticalDialog
 from ui.parameter_bar import ParameterBar
 from ui.styles import level_color
-from ui.widgets import InfoBar, page_layout
+from ui.widgets import InfoBar, elevate, page_layout
 
 COLUMNS = ("Name", "Type", "Size", "Predicted", "Confidence", "Final level", "")
 FINAL_COLUMN, ACTION_COLUMN = 5, 6
@@ -60,7 +60,7 @@ class UploadPage(QWidget):
 
         self.heading = QLabel("Selected files")
         self.heading.setObjectName("section")
-        self.table = QTableWidget(0, len(COLUMNS))
+        self.table = elevate(QTableWidget(0, len(COLUMNS)))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
