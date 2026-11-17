@@ -69,8 +69,11 @@ QHeaderView::section {{
     background: {SIDEBAR}; color: {MUTED}; border: none; border-bottom: 1px solid {BORDER};
     padding: 8px 10px; font-weight: 600;
 }}
+QGraphicsView {{ background: {BG}; border: 1px solid {BORDER}; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 30px; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; }}
+QScrollBar::handle:horizontal {{ background: {BORDER}; border-radius: 5px; min-width: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QMessageBox {{ background: {BG}; }}
 """

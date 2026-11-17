@@ -329,6 +329,69 @@ def test_viewer_handles_text_image_pdf_and_corruption(qapp):
     assert not FileViewerDialog("a.txt", "text", b"hi").error
 
 
+def test_viewer_zoom(qapp):
+    from PySide6.QtCore import QBuffer, QIODevice, QPoint, QPointF
+    from PySide6.QtGui import QImage, QPainter, QPdfWriter, QWheelEvent
+
+    def png(w, h):
+        img = QImage(w, h, QImage.Format_RGB32)
+        img.fill(0x3366CC)
+        b = QBuffer()
+        b.open(QIODevice.WriteOnly)
+        img.save(b, "PNG")
+        return bytes(b.data())
+
+    def shown(dlg):
+        dlg.show()
+        qapp.processEvents()
+        return dlg
+
+    def ctrl_wheel(dlg, dy):
+        vp = dlg.body.viewport()
+        QApplication.sendEvent(vp, QWheelEvent(QPointF(10, 10), QPointF(vp.mapToGlobal(QPoint(10, 10))), QPoint(),
+                                               QPoint(0, dy), Qt.NoButton, Qt.ControlModifier,
+                                               Qt.NoScrollPhase, False))
+
+    dlg = shown(FileViewerDialog("big.png", "image", png(4000, 1000)))
+    vp, fit = dlg.body.viewport().size(), dlg.zoom()
+    assert fit < 1 and 4000 * fit <= vp.width() and 1000 * fit <= vp.height()     # opens showing the whole image
+    assert dlg.body.horizontalScrollBar().maximum() == 0
+    dlg.zoom_in()
+    assert dlg.zoom() == pytest.approx(fit * 1.25) and dlg.zoom_label.text() == f"{fit * 1.25:.0%}"
+    assert dlg.body.horizontalScrollBar().maximum() > 0
+    dlg.zoom_out()
+    ctrl_wheel(dlg, -120)
+    assert dlg.zoom() == pytest.approx(fit / 1.25)
+    ctrl_wheel(dlg, 120)
+    assert dlg.zoom() == pytest.approx(fit)
+    dlg.set_zoom(1.0)
+    assert dlg.zoom() == 1.0 and dlg.zoom_label.text() == "100%"
+    dlg.set_zoom(1000)
+    assert dlg.zoom() == 8.0                                                        # clamped
+    dlg.fit()
+    assert dlg.zoom() == pytest.approx(fit)
+    dlg.close()
+
+    small = shown(FileViewerDialog("small.png", "image", png(20, 20)))
+    assert small.zoom() == 1.0                                                      # fit never enlarges
+    small.close()
+
+    pdf_buf = QBuffer()
+    pdf_buf.open(QIODevice.WriteOnly)
+    writer = QPdfWriter(pdf_buf)
+    p = QPainter(writer)
+    p.drawText(100, 100, "hello")
+    p.end()
+    pdf = shown(FileViewerDialog("a.pdf", "pdf", bytes(pdf_buf.data())))
+    assert pdf.body.horizontalScrollBar().maximum() == 0                           # fits the page width
+    pdf.set_zoom(pdf.zoom() * 1.05)
+    qapp.processEvents()
+    assert pdf.body.horizontalScrollBar().maximum() > 0
+    pdf.close()
+
+    assert not hasattr(FileViewerDialog("a.txt", "text", b"hi"), "zoom_label")    # text: Ctrl+wheel built in
+
+
 # ---- edit page ------------------------------------------------------------------------------------------
 def _edit_setup(tmp_path, host, account, level="Standard", predicted=None):
     win, overlay, runner = host
