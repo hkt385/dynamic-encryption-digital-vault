@@ -11,3 +11,5 @@ pandas>=2.2
 scipy>=1.13
 # Tests only
 pytest
+# Benchmarks only (bench/benchmark.py plots); not imported by the application
+matplotlib==3.11.2
