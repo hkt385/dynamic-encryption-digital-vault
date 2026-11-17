@@ -54,6 +54,7 @@ def test_floor_and_override_rules():
         "Low", "Enhanced", "High", None, None, None]
     assert is_override("Low", "High") and not is_override("Low", "Low")
     assert not is_override("High/Critical", "High") and not is_override("High/Critical", "Critical")
+    assert is_override("High/Critical", "Low") and is_override("Enhanced", "Standard")   # 0.1 downgrades
     assert not is_override("", "High") and not is_override("Standard", None)
 
 

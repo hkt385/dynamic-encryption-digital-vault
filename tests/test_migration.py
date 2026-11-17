@@ -98,6 +98,24 @@ def test_upgraded_files_can_be_reencrypted(legacy):
     assert new.algorithm == "CHACHA20-POLY1305" and vault.read_file(old.file_id)[1] == CONTENT + b"old"
 
 
+def test_upgraded_files_keep_the_upward_only_rule(legacy):
+    """0.1 let the Edit page lower a level. Such a file keeps its prediction as the floor; a file
+    without a stored prediction keeps its current level as the floor."""
+    vault_dir, index = legacy
+    index[0]["predicted_level"] = "High/Critical"                      # Low.txt: lowered in 0.1
+    (vault_dir / "metadata/files.json").write_text(json.dumps(index), encoding="utf-8")
+    vault = VaultService(vault_dir)
+    vault.migrate(PASSWORD)
+    lowered, old = vault.list_files()[0], vault.list_files()[-1]
+    assert (lowered.security_level, lowered.override, lowered.confidence, lowered.model_inputs) == (
+        "Low", True, None, {})                                         # nothing invented for 0.1 files
+    with pytest.raises(OperationError, match="below the predicted level High/Critical"):
+        vault.reencrypt(lowered.file_id, "Enhanced", "Enterprise")
+    assert not vault.reencrypt(lowered.file_id, "High", "Enterprise").override
+    with pytest.raises(OperationError, match="current level Standard"):
+        vault.reencrypt(old.file_id, "Low", "Enterprise")
+
+
 @pytest.mark.parametrize("fail_at", ["store_key", "release_key", "rename"])
 def test_forced_failure_half_way_rolls_back_cleanly(legacy, monkeypatch, fail_at):
     vault_dir, _ = legacy

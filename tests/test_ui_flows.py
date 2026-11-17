@@ -228,11 +228,11 @@ def test_dropdowns_exist_only_on_upload_page_and_persist(qapp, tmp_path, model):
 
 
 # ---- view page: double-click open ----------------------------------------------------------------------
-def _stored_vault(tmp_path, name, content, level="Standard"):
+def _stored_vault(tmp_path, name, content, level="Standard", predicted=None):
     vault = new_vault(tmp_path / "DEDV")
     src = tmp_path / name
     src.write_bytes(content)
-    d = SecurityDecision(FINAL, "Enterprise", predicted=level, level=level, confidence=0.81,
+    d = SecurityDecision(FINAL, "Enterprise", predicted=predicted or level, level=level, confidence=0.81,
                          params={"Sensitivity": "High"}, acknowledged=True)
     assert vault.store_files([(src, d)], "Enterprise").stored == [name]
     return vault, vault.list_files()[-1]
@@ -330,9 +330,9 @@ def test_viewer_handles_text_image_pdf_and_corruption(qapp):
 
 
 # ---- edit page ------------------------------------------------------------------------------------------
-def _edit_setup(tmp_path, host, account, level="Standard"):
+def _edit_setup(tmp_path, host, account, level="Standard", predicted=None):
     win, overlay, runner = host
-    vault, meta = _stored_vault(tmp_path, "note.txt", CONTENT, level)
+    vault, meta = _stored_vault(tmp_path, "note.txt", CONTENT, level, predicted)
     page = EditPage(lambda: vault, lambda: account, runner)
     page.refresh()
     return page, vault, meta, overlay
@@ -349,6 +349,13 @@ def test_edit_page_shows_current_details_and_account_valid_targets(qapp, tmp_pat
     assert page.target.currentData() == "Enhanced" and page.button.isEnabled()
     assert account_levels("Enterprise") == ("Low", "Standard", "Enhanced", "High", "Critical")
     assert "High" not in account_levels("Personal") and "Critical" not in account_levels("Personal")
+
+
+def test_edit_page_enterprise_high_critical_floor(qapp, tmp_path, host):
+    page, *_ = _edit_setup(tmp_path, host, "Enterprise", level="Critical", predicted="High/Critical")
+    items = {page.target.itemData(i): page.target.model().item(i).isEnabled() for i in range(page.target.count())}
+    assert items == {"Low": False, "Standard": False, "Enhanced": False, "High": True}
+    assert page.target.currentData() == "High" and page.button.isEnabled()
 
 
 def test_edit_page_with_no_higher_level_disables_reencrypt(qapp, tmp_path, host):

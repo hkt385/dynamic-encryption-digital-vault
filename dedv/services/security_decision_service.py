@@ -127,9 +127,12 @@ def validate_not_below(predicted: str | None, level: str, floor: str | None = No
 
 
 def is_override(predicted: str | None, level: str | None) -> bool:
-    """True if the final level differs from a single-level prediction. Choosing High or Critical
-    for a High/Critical prediction is the required choice, not an override."""
-    return predicted in LEVEL_ORDER and level is not None and level != predicted
+    """True if the final level differs from the prediction. Choosing High or Critical for a
+    High/Critical prediction is the required choice, not an override; any other level is one
+    (only a 0.1 vault can hold a level below its prediction)."""
+    if level is None or floor_level(predicted) is None:
+        return False
+    return level not in (("High", "Critical") if predicted == HIGH_CRITICAL else (predicted,))
 
 
 class SecurityDecisionEngine:
