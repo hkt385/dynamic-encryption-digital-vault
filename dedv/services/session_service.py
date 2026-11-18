@@ -169,3 +169,24 @@ class SessionStore:
                 removed = True
             if removed:
                 self.audit.append("session_end", OK, detail=reason)
+
+
+def register_notifications(hwnd: int) -> bool:
+    """Ask Windows to send WM_WTSSESSION_CHANGE (lock / unlock of this sign-in) to the window."""
+    try:
+        from ctypes import wintypes
+        fn = ctypes.WinDLL("wtsapi32").WTSRegisterSessionNotification
+        fn.argtypes, fn.restype = [wintypes.HWND, wintypes.DWORD], wintypes.BOOL
+        return bool(fn(hwnd, NOTIFY_FOR_THIS_SESSION))
+    except (OSError, AttributeError):
+        return False
+
+
+def unregister_notifications(hwnd: int) -> None:
+    try:
+        from ctypes import wintypes
+        fn = ctypes.WinDLL("wtsapi32").WTSUnRegisterSessionNotification
+        fn.argtypes, fn.restype = [wintypes.HWND], wintypes.BOOL
+        fn(hwnd)
+    except (OSError, AttributeError):
+        pass

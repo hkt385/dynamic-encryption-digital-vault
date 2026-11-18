@@ -21,6 +21,13 @@ from ui.unlock_dialog import NewPasswordDialog, RecoveryKeyDialog, UnlockDialog,
 NEW_PASSWORD = "a brand new password"
 
 
+def closed_without_session(vault_dir):
+    """An existing vault, closed with its Windows sign-in session ended (so it asks again)."""
+    vault = new_vault(vault_dir)
+    vault.lock(end_session=True)
+    vault.close()
+
+
 def lock_held(tmp_path) -> bool:
     """Is a vault under this test's folder still locked by this process?"""
     return any(Path(p).is_relative_to(tmp_path.resolve()) for p in VaultLock._held)
@@ -172,14 +179,14 @@ def test_cancelling_at_start_up_opens_nothing_and_releases_the_lock(qapp, tmp_pa
     typed["password"] = None
     assert open_vault(tmp_path / "DEDV") is None                # first-password dialog cancelled
     assert not lock_held(tmp_path)
-    new_vault(tmp_path / "DEDV").close()
+    closed_without_session(tmp_path / "DEDV")
     monkeypatch.setattr(UnlockDialog, "exec", lambda self: QDialog.Rejected)
     assert open_vault(tmp_path / "DEDV") is None                # unlock dialog closed
     assert not lock_held(tmp_path)
 
 
 def test_existing_vault_asks_for_the_password(qapp, tmp_path, monkeypatch):
-    new_vault(tmp_path / "DEDV").close()
+    closed_without_session(tmp_path / "DEDV")
 
     def fill(self):
         self.password.setText(PASSWORD)
@@ -275,7 +282,7 @@ def test_lock_button_hides_everything_until_the_password_is_given(window, monkey
     assert wait_until(lambda: bool(visible_at_prompt) and window.isVisible())
     assert visible_at_prompt == [(False, False, False, False)]  # hidden, locked, viewer closed, temp copy gone
     assert window.vault.session.is_unlocked and window._idle.isActive()
-    assert [r["action"] for r in window.vault.audit.entries()][-3:] == ["lock", "unlock", "session_start"]
+    assert [r["action"] for r in window.vault.audit.entries()][-4:] == ["session_end", "lock", "unlock", "session_start"]
 
 
 def test_closing_the_unlock_prompt_closes_the_application(window, monkeypatch, tmp_path):
@@ -386,3 +393,95 @@ def test_old_key_file_warning_and_delete_button(qapp, tmp_path, boxes):
     page.old_key_btn.click()
     assert not key_file.exists() and page.old_key_btn.isHidden()
     assert vault.audit.entries()[-1]["action"] == "old_key_file_deleted"
+
+
+# ---- Windows sign-in sessions -----------------------------------------------------------------------
+def session_rows(vault) -> int:
+    with vault.db as conn:
+        return conn.execute("SELECT COUNT(*) FROM keys.sessions").fetchone()[0]
+
+
+def no_prompt(monkeypatch):
+    monkeypatch.setattr(UnlockDialog, "exec", lambda self: pytest.fail("asked for the password"))
+
+
+def test_open_vault_with_a_live_session_asks_nothing(qapp, tmp_path, monkeypatch):
+    new_vault(tmp_path / "DEDV").close()                        # closing DEDV keeps the session
+    no_prompt(monkeypatch)
+    vault = open_vault(tmp_path / "DEDV")
+    assert vault.session.is_unlocked
+    vault.close()
+
+
+def test_lock_button_ends_the_session(window, monkeypatch):
+    at_prompt = []
+    _unlock_with(monkeypatch, PASSWORD, lambda: at_prompt.append(session_rows(window.vault)))
+    window.lock_btn.click()
+    assert wait_until(lambda: bool(at_prompt) and window.isVisible())
+    assert at_prompt == [0] and session_rows(window.vault) == 1    # the password starts a new one
+
+
+def test_idle_auto_lock_ends_the_session(window, monkeypatch):
+    at_prompt = []
+    _unlock_with(monkeypatch, PASSWORD, lambda: at_prompt.append(session_rows(window.vault)))
+    window._idle.start(40)
+    assert wait_until(lambda: bool(at_prompt), 5)
+    assert at_prompt == [0]
+
+
+def test_windows_lock_and_unlock(window, monkeypatch):
+    no_prompt(monkeypatch)
+    preview = QDialog(window)                                   # stands for an open file viewer
+    preview.show()
+    copy = window.temp_files.write("plain.xyz", b"decrypted copy")
+    session = window.vault.session
+    window.windows_locked()
+    assert not session.is_unlocked and not window.isVisible()
+    assert not preview.isVisible() and not copy.exists()
+    assert session_rows(window.vault) == 1                      # the session stays
+    QApplication.processEvents()
+    window.windows_unlocked()
+    assert session.is_unlocked and window.isVisible() and window._idle.isActive()
+
+
+def test_windows_unlock_without_a_session_asks_for_the_password(window, monkeypatch):
+    window.windows_locked()
+    with window.vault.db as conn:
+        conn.execute("DELETE FROM keys.sessions")                # e.g. ended on another computer
+    _unlock_with(monkeypatch, PASSWORD)
+    window.windows_unlocked()
+    assert wait_until(lambda: window.vault.session.is_unlocked and window.isVisible())
+
+
+def test_windows_unlock_does_not_double_the_prompt(window, monkeypatch):
+    prompts = []
+    _unlock_with(monkeypatch, PASSWORD, lambda: prompts.append(1))
+    window.lock_btn.click()                                     # Lock: the prompt is on its way
+    window.windows_unlocked()                                   # not locked by Windows: ignored
+    assert wait_until(lambda: bool(prompts) and window.isVisible())
+    QApplication.processEvents()
+    assert prompts == [1]
+
+
+def test_windows_lock_waits_for_encryption_and_unlock_cancels_it(window, monkeypatch):
+    _unlock_with(monkeypatch, None)                             # any prompt would close DEDV
+    window.runner = type("Busy", (), {"busy": True})()
+    window.windows_locked()
+    assert window.vault.session.is_unlocked                     # never interrupt an encryption
+    window.windows_unlocked()
+    window.runner.busy = False
+    assert not wait_until(lambda: window.vault is None or not window.vault.session.is_unlocked, 3)
+    assert window.isVisible()
+
+
+def test_native_session_messages_are_routed(window, monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+    no_prompt(monkeypatch)
+    msg = wintypes.MSG()
+    msg.message, msg.wParam = 0x02B1, 7                         # WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK
+    assert window.nativeEvent(b"windows_generic_MSG", ctypes.addressof(msg)) == (False, 0)
+    assert not window.vault.session.is_unlocked
+    msg.wParam = 8                                              # WTS_SESSION_UNLOCK
+    window.nativeEvent(b"windows_generic_MSG", ctypes.addressof(msg))
+    assert window.vault.session.is_unlocked

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QFrame, QHBo
                                QMainWindow, QStackedWidget, QVBoxLayout, QWidget)
 
 from config.config_manager import ConfigManager
+from services import session_service
 from services.security_decision_service import SecurityDecisionEngine
 from services.storage_service import StorageError, create_vault
 from services.vault_service import VaultService
@@ -158,6 +159,9 @@ class MainWindow(QMainWindow):
         cl.addWidget(content, 1)
         self.setCentralWidget(central)
 
+        self._locked_by_windows = False           # vault locked by the Windows lock screen (Win+L)
+        self._notify_hwnd = 0                     # window registered for Windows lock/unlock messages
+
         # Auto-lock: any key or mouse activity anywhere in the application restarts the timer.
         self._idle = QTimer(self)
         self._idle.setSingleShot(True)
@@ -279,14 +283,69 @@ class MainWindow(QMainWindow):
         if self.runner.busy:                      # never interrupt an encryption; lock right after it
             self._idle.start(2000)
             return
+        self._close_vault_views()
+        self.vault.lock(end_session=True)         # the password is needed to open it again
+        self.hide()
+        QTimer.singleShot(0, self._ask_unlock)
+
+    def _close_vault_views(self):
         self._idle.stop()
         for w in QApplication.topLevelWidgets():  # file previews, pickers, message boxes
             if isinstance(w, QDialog) and w.isVisible():
                 w.reject()
         self.temp_files.cleanup()                 # decrypted copies handed to other programs
+
+    # ---- Windows lock screen ---------------------------------------------------------------------
+    def windows_locked(self):
+        """Windows was locked (Win+L): lock the vault but keep the sign-in session, so unlocking
+        Windows opens it again. Waits for a running encryption, like the Lock button."""
+        if self.vault is None or not self.vault.session.is_unlocked:
+            return
+        self._locked_by_windows = True
+        self._finish_windows_lock()
+
+    def _finish_windows_lock(self):
+        if not self._locked_by_windows or self.vault is None or not self.vault.session.is_unlocked:
+            return
+        if self.runner.busy:
+            QTimer.singleShot(2000, self._finish_windows_lock)
+            return
+        self._close_vault_views()
         self.vault.lock()
         self.hide()
-        QTimer.singleShot(0, self._ask_unlock)
+
+    def windows_unlocked(self):
+        """Windows was unlocked: resume the session, or ask for the password if it has ended.
+        Does nothing if the vault was not locked by the Windows lock screen."""
+        if not self._locked_by_windows:
+            return
+        self._locked_by_windows = False           # also cancels a lock still waiting for encryption
+        if self.vault is None or self.vault.session.is_unlocked:
+            return
+        if self.vault.session.resume():
+            self.show()
+            self._refresh_pages()
+            self._restart_idle_timer()
+        else:
+            self._ask_unlock()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._notify_hwnd and QApplication.platformName() == "windows":
+            hwnd = int(self.winId())
+            if session_service.register_notifications(hwnd):
+                self._notify_hwnd = hwnd
+
+    def nativeEvent(self, event_type, message):
+        if bytes(event_type) == b"windows_generic_MSG":
+            from ctypes import wintypes
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == session_service.WM_WTSSESSION_CHANGE:
+                if msg.wParam == session_service.WTS_SESSION_LOCK:
+                    self.windows_locked()
+                elif msg.wParam == session_service.WTS_SESSION_UNLOCK:
+                    self.windows_unlocked()
+        return False, 0
 
     def _ask_unlock(self):
         if self.vault is None:                    # the window was closed before the prompt came up
@@ -305,6 +364,9 @@ class MainWindow(QMainWindow):
             return
         self._idle.stop()
         self.temp_files.cleanup()
+        if self._notify_hwnd:
+            session_service.unregister_notifications(self._notify_hwnd)
+            self._notify_hwnd = 0
         if self.vault is not None:
             self.vault.close()
             self.vault = None

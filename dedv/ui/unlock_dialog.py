@@ -289,7 +289,8 @@ def _upgrade(vault: VaultService, parent) -> bool:
 
 def open_vault(vault_dir: Path, parent=None) -> VaultService | None:
     """Open the vault and bring it to the unlocked state, asking the user for whatever is needed
-    (unlock, first password, or upgrade of an old vault). None = the user cancelled.
+    (unlock, first password, or upgrade of an old vault). A live session of this Windows sign-in
+    opens it without asking. None = the user cancelled.
     Raises StorageError if the vault cannot be opened at all."""
     vault = VaultService(vault_dir)
     try:
@@ -297,6 +298,8 @@ def open_vault(vault_dir: Path, parent=None) -> VaultService | None:
             ok = _upgrade(vault, parent)
         elif not vault.session.is_initialized:
             ok = _first_password(vault, parent)
+        elif vault.session.resume():
+            ok = True
         else:
             ok = UnlockDialog(vault.session, str(vault.vault_dir), parent).exec() == QDialog.Accepted
     except Exception:
