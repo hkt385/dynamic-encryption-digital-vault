@@ -12,6 +12,7 @@ import tempfile  # noqa: E402
 _session_dir = tempfile.mkdtemp(prefix="dedv-tests-")
 os.environ["DEDV_KEY_DIR"] = os.path.join(_session_dir, "keys")
 os.environ["DEDV_TEMP_DIR"] = os.path.join(_session_dir, "tmpview")
+os.environ["DEDV_SESSION_DIR"] = os.path.join(_session_dir, "sessions")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dedv"))
 
 from services.ml_model_service import FEATURES, get_model_service  # noqa: E402
@@ -49,9 +50,18 @@ def qapp():
 
 @pytest.fixture(autouse=True)
 def isolated_dirs(tmp_path, monkeypatch):
-    """No test may touch the real DEDV key or temp-view folders."""
+    """No test may touch the real DEDV key, temp-view or session folders."""
     monkeypatch.setenv("DEDV_KEY_DIR", str(tmp_path / "keys"))
     monkeypatch.setenv("DEDV_TEMP_DIR", str(tmp_path / "tmpview"))
+    monkeypatch.setenv("DEDV_SESSION_DIR", str(tmp_path / "sessions"))
+
+
+@pytest.fixture(autouse=True)
+def no_vault_acl(monkeypatch):
+    """Opening a vault restricts its folder to the current Windows user (icacls). Stubbed here:
+    one subprocess per vault open would slow the suite. test_sessions.py tests the real call."""
+    from services import vault_service
+    monkeypatch.setattr(vault_service, "restrict_permissions", lambda path: True, raising=False)
 
 
 @pytest.fixture(autouse=True)

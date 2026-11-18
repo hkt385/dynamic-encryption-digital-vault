@@ -89,6 +89,12 @@ def key_dir() -> Path:
     return Path(override) if override else _local_base() / "DEDV" / "keys"
 
 
+def session_dir() -> Path:
+    """Per-user cache of session keys bound to the Windows sign-in (session_service)."""
+    override = os.environ.get("DEDV_SESSION_DIR")
+    return Path(override) if override else _local_base() / "DEDV" / "sessions"
+
+
 def temp_view_dir() -> Path:
     """Dedicated folder for decrypted copies handed to external applications (outside the vault)."""
     override = os.environ.get("DEDV_TEMP_DIR")

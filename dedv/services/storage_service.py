@@ -54,6 +54,12 @@ MIGRATIONS = [
                token TEXT PRIMARY KEY, file_id TEXT NOT NULL, algorithm TEXT NOT NULL,
                level TEXT NOT NULL, nonce BLOB NOT NULL, ct BLOB NOT NULL)""",
     ]),
+    (2, [   # DEDV 0.3.0
+        # keys.db: the VMK wrapped under a session key, one row per computer (session_service).
+        """CREATE TABLE IF NOT EXISTS keys.sessions (
+               host TEXT PRIMARY KEY, session_id TEXT NOT NULL, logon_id TEXT NOT NULL,
+               created TEXT NOT NULL, nonce BLOB NOT NULL, wrapped_vmk BLOB NOT NULL)""",
+    ]),
 ]
 
 
