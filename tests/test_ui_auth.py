@@ -275,7 +275,7 @@ def test_lock_button_hides_everything_until_the_password_is_given(window, monkey
     assert wait_until(lambda: bool(visible_at_prompt) and window.isVisible())
     assert visible_at_prompt == [(False, False, False, False)]  # hidden, locked, viewer closed, temp copy gone
     assert window.vault.session.is_unlocked and window._idle.isActive()
-    assert [r["action"] for r in window.vault.audit.entries()][-2:] == ["lock", "unlock"]
+    assert [r["action"] for r in window.vault.audit.entries()][-3:] == ["lock", "unlock", "session_start"]
 
 
 def test_closing_the_unlock_prompt_closes_the_application(window, monkeypatch, tmp_path):
@@ -361,13 +361,13 @@ def test_verify_audit_log_button(qapp, tmp_path):
     vault = new_vault(tmp_path / "DEDV")
     page = DeveloperPage(lambda: vault)
     page.verify_btn.click()
-    assert "intact" in page.audit_result.text() and "1 entries" in page.audit_result.text()
+    assert "intact" in page.audit_result.text() and "2 entries" in page.audit_result.text()
     vault.lock()
     vault.session.unlock(PASSWORD)
     with vault.db as conn:
         conn.execute("UPDATE audit_log SET detail='edited' WHERE id=2")
     page.verify_btn.click()
-    assert "damaged" in page.audit_result.text() and "entry 2 of 3" in page.audit_result.text()
+    assert "damaged" in page.audit_result.text() and "entry 2 of 5" in page.audit_result.text()
     assert not DeveloperPage().verify_btn.isEnabled()            # no vault open
 
 

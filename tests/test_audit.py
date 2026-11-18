@@ -35,18 +35,18 @@ def test_every_operation_is_logged_with_utc_time(vault, tmp_path):
     vault.session.unlock(PASSWORD)
     f = meta.file_id
     assert rows(vault) == [
-        ("password_set", "OK", "", ""),
+        ("password_set", "OK", "", ""), ("session_start", "OK", "", ""),
         ("store", "OK", f, "Standard"),
         ("key_release", "OK", f, "Standard"), ("read", "OK", f, "Standard"),
         ("open_external", "OK", f, "Standard"),
         ("key_release", "OK", f, "Standard"), ("reencrypt", "OK", f, "High"),
         ("lock", "OK", "", ""),
         ("key_release", "DENIED", f, ""), ("read", "FAILED", f, "High"),
-        ("unlock", "OK", "", ""),
+        ("unlock", "OK", "", ""), ("session_start", "OK", "", ""),
     ]
     entries = vault.audit.entries()
     assert all(e["ts"].endswith("+00:00") for e in entries)             # UTC
-    assert entries[6]["detail"] == "Standard -> High"
+    assert entries[7]["detail"] == "Standard -> High"
     assert vault.audit.verify() == (True, len(entries), None)
 
 
