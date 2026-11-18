@@ -3,11 +3,13 @@
 Key hierarchy:
     password --Argon2id(salt, stored parameters)--> 256-bit key --AES-256-GCM--> wraps the VMK
     recovery key (256 random bits, shown once)   ----------------AES-256-GCM--> wraps the VMK
+    session key (256 random bits) ---------------AES-256-GCM--> wraps the VMK (session_service)
     VMK (256 random bits) --AES-256-GCM--> wraps each file's key record (key_management_service)
 
 Both wrapped copies of the VMK, the salt and the Argon2id parameters are in the vault_keys table
 of <vault>/config/keys.db. Changing the password, or resetting it with the recovery key, re-wraps
-only the VMK; no file is re-encrypted.
+only the VMK; no file is re-encrypted. Every password unlock starts a session bound to the Windows
+sign-in (session_service); a password change or reset ends all sessions first.
 
 While unlocked the VMK is held in a bytearray that is overwritten with zeros on lock(). This is
 BEST EFFORT: Python makes immutable copies (the bytes handed to AES-GCM, the password string)
@@ -22,6 +24,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from services.audit_service import FAILED, OK, AuditLog
+from services.session_service import SessionStore
 from services.storage_service import VaultDb
 
 # Argon2id cost for NEW vaults and password changes. Each vault stores the values it was created
@@ -94,9 +97,10 @@ def _aad(slot: str) -> bytes:
 
 
 class AuthSession:
-    def __init__(self, db: VaultDb, audit: AuditLog):
+    def __init__(self, db: VaultDb, audit: AuditLog, sessions: SessionStore | None = None):
         self.db = db
         self.audit = audit
+        self.sessions = sessions          # None: no sessions (e.g. the temporary upgrade database)
         self._vmk: bytearray | None = None
 
     # ---- state ---------------------------------------------------------------------------------
@@ -114,7 +118,9 @@ class AuthSession:
             raise AuthError("The vault is locked.")
         return bytes(self._vmk)
 
-    def lock(self) -> None:
+    def lock(self, end_session: bool = False) -> None:
+        if end_session and self.sessions is not None:
+            self.sessions.end("lock")
         if self._vmk is not None:
             for i in range(len(self._vmk)):
                 self._vmk[i] = 0
@@ -147,6 +153,7 @@ class AuthSession:
                          (RECOVERY_SLOT, nonce, AESGCM(recovery).encrypt(nonce, vmk, _aad(RECOVERY_SLOT))))
             self.audit.append("password_set")
         self._vmk = bytearray(vmk)
+        self._start_session(vmk)
         return format_recovery_key(recovery)
 
     # ---- unlock --------------------------------------------------------------------------------
@@ -185,6 +192,21 @@ class AuthSession:
         vmk = self._password_vmk(password)
         self._vmk = bytearray(vmk)
         self.audit.append("unlock", OK)
+        self._start_session(vmk)
+
+    def resume(self) -> bool:
+        """Unlock without the password if this Windows sign-in has a live session for the vault."""
+        vmk = self.sessions.resume() if self.sessions is not None else None
+        if vmk is None:
+            return False
+        self._vmk = bytearray(vmk)
+        return True
+
+    def _start_session(self, vmk: bytes, end_others: str = "") -> None:
+        if self.sessions is not None:
+            if end_others:
+                self.sessions.end_all(end_others)
+            self.sessions.start(vmk)
 
     def change_password(self, old_password: str, new_password: str) -> None:
         check_password(new_password)
@@ -192,6 +214,7 @@ class AuthSession:
         with self.db as conn:
             self._wrap_password(conn, vmk, new_password)
             self.audit.append("password_change")
+        self._start_session(vmk, end_others="password change")
 
     def reset_with_recovery_key(self, recovery_key: str, new_password: str) -> None:
         """Forgotten password: unwrap the VMK with the recovery key, set a new password and unlock.
@@ -211,3 +234,4 @@ class AuthSession:
             conn.execute("DELETE FROM keys.unlock_state")
             self.audit.append("recovery_use", OK, detail="password reset")
         self._vmk = bytearray(vmk)
+        self._start_session(vmk, end_others="password reset")

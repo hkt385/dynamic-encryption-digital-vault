@@ -16,11 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from models.file_metadata import FileMetadata
+from paths import restrict_permissions
 from services import migration_service
 from services.audit_service import FAILED, OK, AuditLog
 from services.auth_service import AuthError, AuthSession
 from services.encryption_service import EncryptionError, EncryptionService
 from services.key_management_service import KeyManagementService, KeyStoreError
+from services.session_service import SessionStore
 from services.security_decision_service import (SecurityDecision, floor_level, is_override,
                                                 validate_final_level, validate_not_below)
 from services.storage_service import (SqliteVaultRepository, StorageError, VaultDb, VaultLock,
@@ -51,6 +53,9 @@ class VaultService:
         self.vault_dir = Path(vault_dir)
         create_vault(self.vault_dir.parent)           # ensures folders exist
         self._vault_lock = VaultLock(self.vault_dir)  # one DEDV process per vault
+        # Owner-only folder: other Windows users cannot open the vault. Best effort (not possible on
+        # FAT32/exFAT drives; an administrator can still take ownership).
+        restrict_permissions(self.vault_dir)
         self.encryption = EncryptionService()
         self._op_lock = threading.Lock()
         self.db: VaultDb | None = None
@@ -69,7 +74,7 @@ class VaultService:
         self.db = VaultDb(self.vault_dir)
         self.repo = SqliteVaultRepository(self.db)
         self.audit = AuditLog(self.db)
-        self.session = AuthSession(self.db, self.audit)
+        self.session = AuthSession(self.db, self.audit, SessionStore(self.db, self.audit, self.vault_dir))
         self.keys = KeyManagementService(self.db, self.audit)
 
     @property
@@ -83,9 +88,11 @@ class VaultService:
         self.session.unlock(password)
         return result
 
-    def lock(self) -> None:
+    def lock(self, end_session: bool = False) -> None:
+        """Forget the VMK. end_session=True also ends the Windows sign-in session (Lock button,
+        idle auto-lock); closing DEDV keeps it."""
         if self.session is not None:
-            self.session.lock()
+            self.session.lock(end_session)
 
     def close(self) -> None:
         """Lock, close the databases and release the cross-process lock. Safe to call twice."""

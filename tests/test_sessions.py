@@ -135,3 +135,106 @@ def test_no_secret_in_clear(vault):
 def test_schema_step_2(vault):
     with vault.db as conn:
         assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 2
+
+
+# ---- AuthSession / VaultService ---------------------------------------------------------------------
+def test_unlock_starts_a_session_and_reopening_resumes(tmp_path):
+    from services.vault_service import VaultService
+    v = new_vault(tmp_path / "DEDV")
+    vmk = v.session.vmk()
+    v.close()
+    v2 = VaultService(tmp_path / "DEDV")
+    try:
+        assert not v2.session.is_unlocked
+        assert v2.session.resume() is True
+        assert v2.session.vmk() == vmk
+    finally:
+        v2.close()
+
+
+def test_lock_keeps_the_session_unless_ended(vault):
+    vault.lock()
+    assert vault.session.resume() is True
+    vault.lock(end_session=True)
+    assert not vault.session.is_unlocked
+    assert vault.session.resume() is False
+
+
+def test_password_change_ends_old_sessions_and_starts_a_new_one(vault):
+    from conftest import PASSWORD
+    old_cache = store(vault).cache_path.read_bytes()
+    vault.session.change_password(PASSWORD, "another long password")
+    new_cache = store(vault).cache_path.read_bytes()
+    store(vault).cache_path.write_bytes(old_cache)
+    vault.lock()
+    assert vault.session.resume() is False                 # the old session token is dead
+    vault.session.unlock("another long password")
+    assert store(vault).cache_path.read_bytes() != old_cache != new_cache
+    vault.lock()
+    assert vault.session.resume() is True
+
+
+def test_recovery_reset_ends_all_sessions(vault):
+    with vault.db as conn:
+        conn.execute("INSERT INTO keys.sessions VALUES ('OTHER-PC', 'x', 'y', 'z', x'00', x'00')")
+    vault.lock()
+    vault.session.reset_with_recovery_key(vault.recovery_key, "another long password")
+    assert [r["host"] for r in rows(vault)] == [session_service.host()]
+
+
+def test_upgrade_of_an_old_vault_starts_a_session(tmp_path):
+    from conftest import PASSWORD
+    from legacy import write_legacy_vault
+    from paths import key_dir
+    from services.vault_service import VaultService
+    write_legacy_vault(tmp_path / "DEDV", key_dir(), [("a.txt", "Standard", b"aaa")])
+    v = VaultService(tmp_path / "DEDV")
+    try:
+        v.migrate(PASSWORD)
+        assert len(rows(v)) == 1
+    finally:
+        v.close()
+
+
+def test_unlock_works_when_sessions_are_unavailable(tmp_path, monkeypatch):
+    from conftest import PASSWORD
+    monkeypatch.setattr(session_service, "available", lambda: False)
+    v = new_vault(tmp_path / "DEDV")
+    try:
+        v.lock()
+        v.session.unlock(PASSWORD)
+        assert v.session.is_unlocked
+        v.lock()
+        assert v.session.resume() is False and rows(v) == []
+    finally:
+        v.close()
+
+
+def test_audit_order_after_first_password(vault):
+    assert [r["action"] for r in vault.audit.entries()][-2:] == ["password_set", "session_start"]
+
+
+# ---- owner-only vault folder ------------------------------------------------------------------------
+@pytest.mark.parametrize("applied", [True, False], ids=["applied", "not-possible"])
+def test_vault_folder_permissions_are_restricted_on_open(tmp_path, monkeypatch, applied):
+    from services import vault_service
+    calls = []
+    monkeypatch.setattr(vault_service, "restrict_permissions", lambda p: calls.append(p) or applied)
+    v = new_vault(tmp_path / "DEDV")                       # opens even if the folder cannot be restricted
+    try:
+        assert calls == [v.vault_dir] and v.session.is_unlocked
+    finally:
+        v.close()
+
+
+def test_restrict_permissions_leaves_only_the_current_user(tmp_path):
+    import subprocess
+    from paths import restrict_permissions
+    folder = tmp_path / "v"
+    folder.mkdir()
+    (folder / "inside.txt").write_text("x")
+    assert restrict_permissions(folder)
+    for p in (folder, folder / "inside.txt"):
+        out = subprocess.run(["icacls", str(p)], capture_output=True, text=True).stdout
+        assert os.environ["USERNAME"].lower() in out.lower()
+        assert r"BUILTIN\Administrators" not in out and r"NT AUTHORITY\SYSTEM" not in out, out
