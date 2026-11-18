@@ -5,11 +5,12 @@ percentage or time estimate by design.
 """
 import traceback
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import (QEvent, QObject, QRectF, QRunnable, Qt, QThreadPool, QTimer, QVariantAnimation,
+                            Signal)
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from ui.styles import ACCENT, BORDER, PANEL
+from ui import styles
 
 OVERLAY_TEXT = "Encrypting"
 
@@ -44,9 +45,9 @@ class Spinner(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         w = 5
         rect = QRectF(w, w, self.width() - 2 * w, self.height() - 2 * w)
-        p.setPen(QPen(QColor(BORDER), w))
+        p.setPen(QPen(QColor(styles.color("control_stroke")), w))
         p.drawEllipse(rect)
-        pen = QPen(QColor(ACCENT), w)
+        pen = QPen(QColor(styles.color("accent")), w)
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         p.drawArc(rect, -self._angle * 16, -100 * 16)
@@ -65,15 +66,14 @@ class LoadingOverlay(QWidget):
 
         card = QWidget()
         card.setObjectName("overlayCard")
-        card.setStyleSheet(f"QWidget#overlayCard {{ background: {PANEL}; border: 1px solid {BORDER};"
-                           " border-radius: 10px; }")
+        card.setAttribute(Qt.WA_StyledBackground, True)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(36, 28, 36, 28)
         cl.setSpacing(14)
         self.spinner = Spinner()
         self.label = QLabel(OVERLAY_TEXT)
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("font-size: 12pt; font-weight: 600; background: transparent;")
+        self.label.setObjectName("subtitle")
         cl.addWidget(self.spinner, 0, Qt.AlignHCenter)
         cl.addWidget(self.label)
 
@@ -81,6 +81,16 @@ class LoadingOverlay(QWidget):
         lay.setAlignment(Qt.AlignCenter)
         lay.addWidget(card)
         window.installEventFilter(self)
+        self._dim = 1.0                        # scrim strength; fades in (CSS: opacity transition)
+        self._fade = QVariantAnimation(self)
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.setEasingCurve(styles.ease())
+        self._fade.valueChanged.connect(self._set_dim)
+
+    def _set_dim(self, value):
+        self._dim = float(value)
+        self.update()
 
     @property
     def active(self) -> bool:
@@ -94,7 +104,12 @@ class LoadingOverlay(QWidget):
         if central:
             central.setEnabled(False)
         self.raise_()
+        ms = styles.motion(styles.FAST)
+        self._dim = 0.0 if ms else 1.0
         self.show()
+        if ms:
+            self._fade.setDuration(ms)
+            self._fade.start()
         self.spinner.start()
         self.setFocus()
 
@@ -113,7 +128,8 @@ class LoadingOverlay(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(10, 12, 15, 170))
+        r, g, b, a = styles.color("scrim")
+        p.fillRect(self.rect(), QColor(r, g, b, int(a * self._dim)))
 
     def mousePressEvent(self, e):
         e.accept()

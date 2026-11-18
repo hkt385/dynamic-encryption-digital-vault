@@ -11,9 +11,10 @@ from services.storage_service import StorageError
 from services.vault_service import OperationError
 from services.viewer_service import BLOCKED, EXTERNAL, TempFiles, classify
 from ui.file_viewer import FileViewerDialog
-from ui.styles import LEVEL_COLORS, MUTED
+from ui.styles import level_color
+from ui.widgets import elevate, page_layout
 
-COLUMNS = ("Name", "Type", "Size", "Date Added", "Predicted", "Algorithm", "Security Level")
+COLUMNS = ("Name", "Type", "Size", "Date added", "Predicted", "Algorithm", "Security level")
 LEVEL_COLUMN = len(COLUMNS) - 1
 
 
@@ -24,47 +25,60 @@ class ViewPage(QWidget):
         self._get_vault = get_vault
         self.temp_files = temp_files or TempFiles()
 
-        self.table = QTableWidget(0, len(COLUMNS))
+        self.table = elevate(QTableWidget(0, len(COLUMNS)))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)   # read-only
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setShowGrid(False)
-        self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setFocusPolicy(Qt.NoFocus)
         self.table.cellDoubleClicked.connect(self._on_double_click)
         header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        header.setHighlightSections(False)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1, len(COLUMNS)):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        header.setMinimumSectionSize(110)
+        header.setMinimumSectionSize(96)
 
         empty = QWidget()
         el = QVBoxLayout(empty)
         el.setAlignment(Qt.AlignCenter)
-        t = QLabel("No files in your vault yet.")
-        t.setObjectName("title")
+        t = QLabel("No files in your vault yet")
+        t.setObjectName("subtitle")
         t.setAlignment(Qt.AlignCenter)
-        s = QLabel("Upload a file to get started.")
+        s = QLabel("Go to Upload to encrypt your first file.")
         s.setObjectName("muted")
         s.setAlignment(Qt.AlignCenter)
         el.addWidget(t)
         el.addWidget(s)
 
+        # Details of the selected file: the decision recorded when it was stored.
+        self.details = elevate(QLabel())    # styled as a card itself: a wrapped label nested in a
+        self.details.setObjectName("detailsCard")   # card frame does not get its full height
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.table.itemSelectionChanged.connect(self._show_details)
+        self._files: dict[str, object] = {}
+        files_view = QWidget()
+        fl = QVBoxLayout(files_view)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(12)
+        fl.addWidget(self.table, 1)
+        fl.addWidget(self.details)
+
         self.stack = QStackedLayout()
-        self.stack.addWidget(self.table)
+        self.stack.addWidget(files_view)
         self.stack.addWidget(empty)
         self.error = QLabel()
-        self.error.setObjectName("muted")
+        self.error.setObjectName("error")
         self.error.setAlignment(Qt.AlignCenter)
+        self.error.setWordWrap(True)
         self.stack.addWidget(self.error)
 
-        self.hint = QLabel("Double-click a file to open it.")
-        self.hint.setObjectName("muted")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
-        lay.addLayout(self.stack)
-        lay.addWidget(self.hint)
+        lay, self.hint = page_layout(self, "View", "Files in your vault. Double-click a file to open it.")
+        lay.addLayout(self.stack, 1)
 
     def refresh(self):
         vault = self._get_vault()
@@ -78,22 +92,39 @@ class ViewPage(QWidget):
             self.stack.setCurrentIndex(1)
             return
         self.stack.setCurrentIndex(0)
+        self._files = {m.file_id: m for m in files}
         self.table.setRowCount(len(files))
         for r, m in enumerate(sorted(files, key=lambda m: m.date_added, reverse=True)):
             try:
                 date = datetime.fromisoformat(m.date_added).strftime("%d/%m/%Y")
             except ValueError:
                 date = m.date_added
-            algo = algorithm_name(m.algorithm) if m.algorithm else "AES-256 (legacy)"
             cells = (m.original_name, m.file_type, format_size(m.size_bytes), date,
-                     m.predicted_level or "-", algo, m.security_level)
+                     m.predicted_level or "-", algorithm_name(m.algorithm), m.security_level)
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if c == 0:
                     item.setData(Qt.UserRole, m.file_id)
                 if c in (4, LEVEL_COLUMN):
-                    item.setForeground(QColor(LEVEL_COLORS.get(text, MUTED)))
+                    item.setForeground(QColor(level_color(text)))
                 self.table.setItem(r, c, item)
+        self._show_details()
+
+    def _show_details(self):
+        rows = self.table.selectionModel().selectedRows()
+        item = self.table.item(rows[0].row(), 0) if rows else None
+        m = self._files.get(item.data(Qt.UserRole)) if item else None
+        if m is None:
+            self.details.setText("Select a file to see how its security level was decided.")
+            return
+        confidence = f"{m.confidence:.0%}" if m.confidence is not None else "not recorded"
+        inputs = ", ".join(f"{k}: {v}" for k, v in m.model_inputs.items()) or "not recorded"
+        self.details.setText(
+            f"{m.original_name}\n"
+            f"Predicted: {m.predicted_level or 'not recorded'}    Confidence: {confidence}    "
+            f"Final level: {m.security_level}    Override: {'Yes' if m.override else 'No'}\n"
+            f"Decided: {m.date_added.replace('T', ' ')} (later changes are in the audit log)\n"
+            f"Model inputs: {inputs}")
 
     # ---- opening -------------------------------------------------------------------------------
     def _on_double_click(self, row: int, _col: int):
@@ -119,7 +150,7 @@ class ViewPage(QWidget):
                                 f"{meta.original_name} is an executable or script-host file type. "
                                 "DEDV does not launch these.")
         elif kind == EXTERNAL:
-            self._open_external(meta.original_name, data)
+            self._open_external(meta.original_name, data, file_id)
         else:
             dlg = FileViewerDialog(meta.original_name, kind, data, self)
             if dlg.error:
@@ -127,12 +158,13 @@ class ViewPage(QWidget):
             else:
                 dlg.exec()
 
-    def _open_external(self, name: str, data: bytes) -> None:
+    def _open_external(self, name: str, data: bytes, file_id: str) -> None:
         ok = QMessageBox.question(
             self, "Open externally?",
             f"DEDV has no built-in preview for {name}.\n\nTo open it, a decrypted copy must be written "
-            "to a temporary folder and opened by another program. It is deleted when DEDV exits "
-            "(or at the next start if the program still has it open).\n\nOpen it?",
+            "to a temporary folder and opened by another program. DEDV overwrites and deletes the "
+            "copy about 5 minutes after opening, or when it locks or exits, once no program is using "
+            "it. On SSDs this cannot guarantee the data is gone from the disk.\n\nOpen it?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ok != QMessageBox.Yes:
             return
@@ -141,6 +173,7 @@ class ViewPage(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "Cannot open file", f"Temporary copy failed: {e.strerror or e}")
             return
+        self._get_vault().log_external_open(file_id)      # audit: plaintext left the application
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             self.temp_files.cleanup()
             QMessageBox.warning(self, "Cannot open file", "No program could open this file type.")

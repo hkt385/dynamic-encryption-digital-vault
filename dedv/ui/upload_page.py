@@ -3,18 +3,31 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-                               QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
+                               QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
+                               QTableWidgetItem, QWidget)
 
 from models.file_metadata import format_size
-from services.security_decision_service import CHOICE_REQUIRED, ERROR, UNSUPPORTED, SecurityDecision
+from services.security_decision_service import (CHOICE_REQUIRED, ERROR, UNSUPPORTED, SecurityDecision,
+                                                account_levels, floor_level, is_below)
 from ui.high_critical_dialog import HighCriticalDialog
 from ui.parameter_bar import ParameterBar
-from ui.styles import LEVEL_COLORS, MUTED
+from ui.styles import level_color
+from ui.widgets import InfoBar, elevate, page_layout
 
-COLUMNS = ("Name", "Type", "Size", "Predicted", "Final Level", "")
+COLUMNS = ("Name", "Type", "Size", "Predicted", "Confidence", "Final level", "")
+FINAL_COLUMN, ACTION_COLUMN = 5, 6
 FINAL_PLACEHOLDER = {CHOICE_REQUIRED: "Choice required", UNSUPPORTED: "Not available", ERROR: "Error"}
+
+
+def fill_levels(combo: QComboBox, levels, floor: str | None, why: str, label=str) -> None:
+    """Add `levels` (item data = level); those below `floor` are disabled with `why` as tooltip."""
+    for level in levels:
+        combo.addItem(label(level), level)
+        if is_below(level, floor):
+            i = combo.count() - 1
+            combo.model().item(i).setEnabled(False)
+            combo.setItemData(i, why, Qt.ToolTipRole)
 
 
 @dataclass
@@ -40,53 +53,57 @@ class UploadPage(QWidget):
         self.entries: list[Entry] = []
         self._dialog_open = False
 
-        title = QLabel("Upload")
-        title.setObjectName("title")
-        self.select_btn = QPushButton("Select Files")
+        self.select_btn = QPushButton("Select files")
         self.select_btn.clicked.connect(self.select_files)
-        self.predict_btn = QPushButton("Predict Security Level")
+        self.predict_btn = QPushButton("Predict security level")
         self.predict_btn.clicked.connect(self.run_prediction)
 
-        self.heading = QLabel("Selected Files")
-        self.heading.setObjectName("sectionLabel")
-        self.table = QTableWidget(0, len(COLUMNS))
+        self.heading = QLabel("Selected files")
+        self.heading.setObjectName("section")
+        self.table = elevate(QTableWidget(0, len(COLUMNS)))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(44)
         self.table.setFocusPolicy(Qt.NoFocus)
         header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for i in range(1, len(COLUMNS)):
             header.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        self.status = QLabel()
-        self.status.setObjectName("muted")
-        self.status.setWordWrap(True)
+        header.setSectionResizeMode(FINAL_COLUMN, QHeaderView.Fixed)     # sized for the level drop-down,
+        header.resizeSection(FINAL_COLUMN, 150)                          # which contents-sizing cuts off
+        self.probabilities = QLabel()
+        self.probabilities.setObjectName("caption")
+        self.probabilities.setWordWrap(True)
+        self.status = InfoBar()
+        self.ack = QCheckBox("I have reviewed this prediction and accept the final level.")
+        self.ack.clicked.connect(self._acknowledge)      # clicked: not emitted by setChecked()
         self.store_btn = QPushButton("Encrypt")
         self.store_btn.setObjectName("primary")
+        self.store_btn.setMinimumWidth(120)
         self.store_btn.clicked.connect(self.store)
 
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(self.select_btn)
         row.addWidget(self.predict_btn)
         row.addStretch()
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.ack)
+        bottom.addStretch()
+        bottom.addWidget(self.store_btn)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(self.param_bar)            # parameters sit at the very top of this page
-        body = QVBoxLayout()
-        body.setContentsMargins(28, 24, 28, 24)
-        body.setSpacing(14)
-        lay.addLayout(body, 1)
-        lay = body
-        lay.addWidget(title)
+        lay, _ = page_layout(self, "Upload", "Encrypt new files into the vault.")
+        lay.addWidget(self.param_bar)            # the answers come first: they decide the level
         lay.addLayout(row)
         lay.addWidget(self.heading)
         lay.addWidget(self.table, 1)
+        lay.addWidget(self.probabilities)
         lay.addWidget(self.status)
-        lay.addWidget(self.store_btn, 0)
+        lay.addLayout(bottom)
         self._render()
 
     # ---- file selection ------------------------------------------------------------------
@@ -96,7 +113,8 @@ class UploadPage(QWidget):
             return
         self.entries = [Entry(Path(n)) for n in names if Path(n).is_file()]
         skipped = len(names) - len(self.entries)
-        self.status.setText(f"{skipped} item(s) skipped because they are not valid files." if skipped else "")
+        self.status.setText(f"{skipped} item(s) skipped because they are not valid files." if skipped else "",
+                            "warning")
         self._render()
 
     # ---- prediction ----------------------------------------------------------------------
@@ -154,7 +172,8 @@ class UploadPage(QWidget):
         for w in (self.heading, self.table, self.store_btn, self.predict_btn):
             w.setVisible(has)
         self.table.setRowCount(len(self.entries))
-        messages: list[str] = []
+        messages: dict[str, list[str]] = {}          # message -> names of the files it applies to
+        severity = "warning"
         for r, e in enumerate(self.entries):
             try:
                 size = format_size(e.path.stat().st_size)
@@ -162,34 +181,78 @@ class UploadPage(QWidget):
                 size = "unavailable"
             d = e.decision
             if d is None:
-                predicted, final = "Not predicted", ""
+                predicted, confidence, final = "Not predicted", "", ""
             else:
                 predicted = d.predicted or "Error"
-                final = d.level or FINAL_PLACEHOLDER.get(d.status, "Error")
-                shown = ([d.message] if d.status in (UNSUPPORTED, ERROR) else []) + d.notes
-                for m in shown:
-                    m = f"{e.path.name}: {m}" if len(self.entries) > 1 else m
-                    if m not in messages:
-                        messages.append(m)
-            cells = (e.path.name, (e.path.suffix.lstrip(".") or "file").upper(), size, predicted, final)
+                confidence = f"{d.confidence:.0%}" if d.confidence is not None else ""
+                final = "" if d.is_final else FINAL_PLACEHOLDER.get(d.status, "Error")   # combo below
+                blocked = d.status in (UNSUPPORTED, ERROR)
+                if blocked:
+                    severity = "error"
+                for m in ([d.message] if blocked else []) + d.notes:
+                    messages.setdefault(m, []).append(e.path.name)
+            cells = (e.path.name, (e.path.suffix.lstrip(".") or "file").upper(), size, predicted,
+                     confidence, final)
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
-                if c >= 3:
-                    item.setForeground(QColor(LEVEL_COLORS.get(text, MUTED)))
+                if c in (3, FINAL_COLUMN):
+                    item.setForeground(QColor(level_color(text)))
                 self.table.setItem(r, c, item)
-            self.table.removeCellWidget(r, 5)
+            for c in (FINAL_COLUMN, ACTION_COLUMN):
+                self.table.removeCellWidget(r, c)
+            if d is not None and d.is_final:
+                combo = QComboBox()
+                fill_levels(combo, account_levels(d.account_type), floor_level(d.predicted),
+                            f"Below the predicted level {d.predicted}. "
+                            "The level may be raised but not lowered.")
+                combo.setCurrentIndex(combo.findData(d.level))
+                combo.activated.connect(lambda i, en=e, cb=combo: self._set_level(en, cb))
+                self.table.setCellWidget(r, FINAL_COLUMN, combo)
             if d is not None and d.status == CHOICE_REQUIRED:
                 btn = QPushButton("Choose High/Critical")
                 btn.clicked.connect(lambda _=False, en=e: self._reopen(en))
-                self.table.setCellWidget(r, 5, btn)
+                self.table.setCellWidget(r, ACTION_COLUMN, btn)
         self.table.resizeRowsToContents()
+        # The model never sees the file, so every file in a batch has the same probabilities.
+        probs = next((e.decision.probabilities for e in self.entries
+                      if e.decision and e.decision.probabilities), None)
+        self.probabilities.setText("Model probabilities: " + ", ".join(
+            f"{label} {p:.0%}" for label, p in probs.items()) if probs else "")
+        self.probabilities.setVisible(bool(probs))
         if messages:
-            self.status.setText("\n".join(messages))
+            # The model never sees the file, so a message usually applies to every file: say it once.
+            lines = [m if len(names) == len(self.entries) else f"{', '.join(names)}: {m}"
+                     for m, names in messages.items()]
+            self.status.setText("\n".join(f"• {m}" for m in lines) if len(lines) > 1 else lines[0], severity)
         elif has and all(e.decision is None for e in self.entries) and not self.status.text():
-            self.status.setText("Choose the prediction parameters above, then predict.")
-        self.store_btn.setEnabled(not self.runner.busy and
+            self.status.setText("Answer the questions above, then select Predict security level.")
+        self._update_actions()
+
+    def _needing_ack(self) -> list[SecurityDecision]:
+        return [e.decision for e in self.entries
+                if e.decision and e.decision.is_final and e.decision.needs_ack]
+
+    def _update_actions(self):
+        need = self._needing_ack()
+        acked = all(d.acknowledged for d in need)
+        self.ack.setVisible(bool(need))
+        self.ack.setChecked(bool(need) and acked)
+        self.store_btn.setEnabled(not self.runner.busy and acked and
                                   any(e.decision and e.decision.is_final for e in self.entries))
         self.predict_btn.setEnabled(not self.runner.busy)
+
+    def _acknowledge(self, checked: bool):
+        for d in self._needing_ack():
+            d.acknowledged = checked
+        self._update_actions()
+
+    def _set_level(self, entry: Entry, combo: QComboBox):
+        """Not re-rendered here: the combo emitting this signal must stay alive."""
+        try:
+            entry.decision.raise_level(combo.currentData())
+        except ValueError as e:              # disabled items cannot be picked; this is the backstop
+            combo.setCurrentIndex(combo.findData(entry.decision.level))
+            self.status.setText(str(e), "warning")
 
     # ---- encrypting ----------------------------------------------------------------------
     def store(self):

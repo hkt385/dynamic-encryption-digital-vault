@@ -2,8 +2,10 @@
 
 ## Environment (Windows)
 
+Python **3.13** (scikit-learn 1.6.1 has no build for 3.14):
+
 ```
-python -m venv .venv && .venv\Scripts\activate
+py -3.13 -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -22,9 +24,20 @@ python dedv\main.py
 python -m pytest tests -q
 ```
 
-(Qt tests run offscreen; no display needed.)
+Qt tests run offscreen; no display needed. Tests use temporary vaults and a tiny Argon2id cost and never touch
+your real vault, key folder or settings.
+
+## Benchmarks
+
+```
+python bench\benchmark.py
+```
+
+About 6 minutes; writes `bench\results\`. See `bench\README.md`.
 
 ## Build the application and installer
+
+From the activated venv:
 
 ```
 build.bat
@@ -32,16 +45,21 @@ build.bat
 
 * `dist\DEDV\DEDV.exe` - the packaged app (model is bundled under `_internal\model\`).
 * `installer\DEDV_Setup.exe` - the Inno Setup installer (exit code 2 and a notice if Inno Setup is missing).
+* The build fails if a key, settings or vault database file (`DEDV_key.txt`, `wrapped_keys.json`,
+  `dev_keys.json`, `settings.json`, `keys.db`, `vault.db`) ends up under `dist`.
 
 ## Verify a packaged build
 
 ```
-dist\DEDV\DEDV.exe --selftest result.json
+set DEDV_SELFTEST_PASSWORD=<a throwaway passphrase of at least 12 characters>
+start /wait dist\DEDV\DEDV.exe --selftest result.json
+echo %errorlevel%
 ```
 
-Writes `result.json` containing the model path, class list and a sample prediction, then exits
-(0 = model loaded and predicted, 1 = failed, with the error in the file). The same command works
-against the installed `DEDV.exe`.
+Loads the model, then runs the whole vault flow in a temporary folder (password, lock/unlock, one file per
+level, read back, re-encrypt, `release_key` refused while locked, audit chain) and writes the result per check
+to `result.json`; exit code 0 = all passed. The password is read only from the environment. The same command
+works against the installed `DEDV.exe`. Details: `docs/DEVELOPER_INSTRUCTIONS.md`, section E.
 
 ## Where things live
 
@@ -49,5 +67,6 @@ against the installed `DEDV.exe`.
 |---|---|
 | Model (read-only) | `model/final_model.joblib` -> `<install>\_internal\model\` |
 | Model documentation | `CONTEXT_PROMPT.md` (development only, not bundled) |
+| Vault | `<chosen folder>\DEDV\` (`encrypted_files\`, `metadata\vault.db`, `config\keys.db`) |
 | Settings incl. dropdown selections | `%APPDATA%\DEDV\settings.json` (outside the install dir) |
 | Window geometry | Windows registry via `QSettings("DEDV", "DEDV")` |

@@ -1,10 +1,11 @@
 import pytest
+from PySide6.QtCore import Qt
 
 from config.config_manager import ConfigManager
 from services.security_decision_service import CHOICE_REQUIRED, SecurityDecisionEngine
 from ui.high_critical_dialog import HighCriticalDialog
 from ui.parameter_bar import ParameterBar
-from ui.upload_page import Entry, UploadPage
+from ui.upload_page import ACTION_COLUMN, FINAL_COLUMN, Entry, UploadPage
 
 
 def _bar(qapp, model, path):
@@ -79,7 +80,10 @@ def test_enterprise_popup_once_and_choice_applies(qapp, model, params_by_class, 
     assert len(calls) == 1
     d = page.entries[0].decision
     assert d.level == "Critical" and d.predicted == "High/Critical"
-    assert page.table.item(0, 4).text() == "Critical"
+    combo = page.table.cellWidget(0, FINAL_COLUMN)
+    assert combo.currentData() == "Critical"
+    enabled = [combo.itemData(i) for i in range(combo.count()) if combo.model().item(i).isEnabled()]
+    assert enabled == ["High", "Critical"] and not d.override       # the required choice, not an override
     assert f.read_text() == "data"
 
 
@@ -104,9 +108,9 @@ def test_dismissal_assigns_nothing_and_can_reopen(qapp, model, params_by_class, 
     page.run_prediction()
     d = page.entries[0].decision
     assert d.status == CHOICE_REQUIRED and d.level is None
-    assert page.table.item(0, 4).text() == "Choice required"
+    assert page.table.item(0, FINAL_COLUMN).text() == "Choice required"
     assert not page.store_btn.isEnabled()
-    assert page.table.cellWidget(0, 5) is not None
+    assert page.table.cellWidget(0, ACTION_COLUMN) is not None
     _stub_dialog(monkeypatch, "High")
     page._reopen(page.entries[0])
     assert d.level == "High"
@@ -126,8 +130,20 @@ def test_personal_never_shows_popup_or_high_critical(qapp, model, params_by_clas
     page.run_prediction()
     assert calls == []
     assert page.entries[0].decision.level is None
-    assert page.table.item(0, 4).text() == "Not available"
+    assert page.table.item(0, FINAL_COLUMN).text() == "Not available"
+    assert "Enterprise vault" in page.status.text()
     assert not page.store_btn.isEnabled()
+
+
+def test_a_message_shared_by_every_file_is_shown_once(qapp, model, params_by_class, tmp_path):
+    page, f = _page(model, params_by_class["High/Critical"], "Personal", tmp_path)
+    g = tmp_path / "b.txt"
+    g.write_text("data")
+    page.entries.append(Entry(g))
+    page.run_prediction()
+    text = page.status.text()
+    assert text.count("Enterprise vault") == 1 and "a.txt" not in text and "b.txt" not in text
+    assert page.status.severity() == "error" and not page.store_btn.isEnabled()
 
 
 def test_invalidate_clears_predictions(qapp, model, params_by_class, tmp_path, monkeypatch):
@@ -136,3 +152,48 @@ def test_invalidate_clears_predictions(qapp, model, params_by_class, tmp_path, m
     page.run_prediction()
     page.invalidate()
     assert page.entries[0].decision is None
+
+
+# ---- upward-only override and acknowledgement -------------------------------------------------------
+@pytest.mark.parametrize("account, levels", [
+    ("Enterprise", ["Low", "Standard", "Enhanced", "High", "Critical"]),
+    ("Personal", ["Low", "Standard", "Enhanced"])])
+def test_final_level_can_be_raised_but_not_lowered(qapp, model, params_by_class, tmp_path, account, levels):
+    page, _ = _page(model, params_by_class["Standard"], account, tmp_path)
+    page.run_prediction()
+    d = page.entries[0].decision
+    assert page.table.item(0, 4).text() == f"{d.confidence:.0%}"
+    assert all(label in page.probabilities.text() for label in ("Low", "Standard", "Enhanced", "High/Critical"))
+    combo = page.table.cellWidget(0, FINAL_COLUMN)
+    assert [combo.itemData(i) for i in range(combo.count())] == levels
+    assert combo.currentData() == "Standard"
+    assert not combo.model().item(0).isEnabled()                    # Low: below the prediction
+    assert "raised but not lowered" in combo.itemData(0, Qt.ToolTipRole)
+    combo.setCurrentIndex(len(levels) - 1)
+    combo.activated.emit(len(levels) - 1)
+    assert d.level == levels[-1] and d.override
+    combo.setCurrentIndex(0)
+    combo.activated.emit(0)                                         # forced: refused, combo restored
+    assert d.level == levels[-1] and combo.currentData() == levels[-1]
+    assert "raised but not lowered" in page.status.text()
+
+
+def test_enhanced_needs_acknowledgement_before_encrypt(qapp, model, params_by_class, tmp_path):
+    page, _ = _page(model, params_by_class["Enhanced"], "Enterprise", tmp_path)
+    page.run_prediction()
+    d = page.entries[0].decision
+    assert d.needs_ack and "not reliably predicted" in page.status.text()
+    assert not page.ack.isHidden() and not page.ack.isChecked() and not page.store_btn.isEnabled()
+    page.ack.click()
+    assert d.acknowledged and page.store_btn.isEnabled()
+    page.run_prediction()                                           # new prediction: ask again
+    assert not page.ack.isChecked() and not page.store_btn.isEnabled()
+
+
+def test_confident_prediction_needs_no_acknowledgement(qapp, model, params_by_class, tmp_path, monkeypatch):
+    _stub_dialog(monkeypatch, "High")
+    page, _ = _page(model, params_by_class["High/Critical"], "Enterprise", tmp_path)
+    page.run_prediction()
+    d = page.entries[0].decision
+    assert d.confidence >= 0.70 and not d.needs_ack                 # precondition on the shipped model
+    assert page.ack.isHidden() and page.store_btn.isEnabled()

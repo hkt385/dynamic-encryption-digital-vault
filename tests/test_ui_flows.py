@@ -3,18 +3,18 @@ import threading
 import time
 
 import pytest
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QWidget
 
 from config.config_manager import ConfigManager
-from conftest import wait_until
-from services.security_decision_service import FINAL, SecurityDecision
-from ui.edit_page import EditPage, levels_for
+from conftest import PASSWORD, new_vault, wait_until
+from services.security_decision_service import FINAL, SecurityDecision, account_levels
+from ui.edit_page import EditPage
 from ui.file_viewer import FileViewerDialog
 from ui.loading_overlay import OVERLAY_TEXT, LoadingOverlay, TaskRunner
 from ui.main_window import MainWindow
 from ui.parameter_bar import ParameterBar
-from ui.upload_page import Entry, UploadPage
+from ui.upload_page import FINAL_COLUMN, Entry, UploadPage
 from ui.view_page import ViewPage
 from services.vault_service import VaultService
 
@@ -103,7 +103,7 @@ def _upload_setup(qapp, model, tmp_path, host, level, params, account="Enterpris
     win, overlay, runner = host
     cfg = ConfigManager(tmp_path / "s.json")
     cfg.update(account_type=account, model_parameters=params)
-    vault = VaultService(tmp_path / "DEDV")
+    vault = new_vault(tmp_path / "DEDV")
     page = UploadPage(lambda: vault, cfg, SecurityDecisionEngine(model), runner)
     src = tmp_path / "doc.txt"
     src.write_bytes(CONTENT)
@@ -115,6 +115,8 @@ def test_encrypt_button_shows_overlay_and_reports_success_only_after_completion(
         qapp, model, params_by_class, tmp_path, host, no_blocking_boxes):
     page, vault, src, overlay, runner = _upload_setup(qapp, model, tmp_path, host, "Low", params_by_class["Low"])
     page.run_prediction()
+    assert not page.store_btn.isEnabled()                         # confidence below 70 %: review first
+    page.ack.click()
     assert page.store_btn.isEnabled()
     gate = threading.Event()
     real = vault.store_files
@@ -142,6 +144,7 @@ def test_encrypt_failure_hides_overlay_and_reports_error(qapp, model, params_by_
                                                           no_blocking_boxes):
     page, vault, src, overlay, runner = _upload_setup(qapp, model, tmp_path, host, "Low", params_by_class["Low"])
     page.run_prediction()
+    page.ack.click()
     vault.store_files = lambda *a: (_ for _ in ()).throw(RuntimeError("kaboom"))
     page.store_btn.click()
     assert wait_until(lambda: bool(no_blocking_boxes))
@@ -169,6 +172,24 @@ def test_final_selected_level_is_the_level_used_for_encryption(qapp, model, para
     assert vault.read_file(meta.file_id)[1] == CONTENT
 
 
+def test_raised_level_is_used_and_recorded_as_override(qapp, model, params_by_class, tmp_path, host,
+                                                       no_blocking_boxes):
+    page, vault, *_ = _upload_setup(qapp, model, tmp_path, host, "x", params_by_class["Standard"])
+    page.run_prediction()
+    d = page.entries[0].decision
+    combo = page.table.cellWidget(0, FINAL_COLUMN)
+    i = combo.findData("High")
+    combo.setCurrentIndex(i)
+    combo.activated.emit(i)
+    page.ack.click()
+    page.store_btn.click()
+    assert wait_until(lambda: bool(no_blocking_boxes))
+    m = vault.list_files()[0]
+    assert (m.predicted_level, m.security_level, m.override, m.algorithm) == (
+        "Standard", "High", True, "CHACHA20-POLY1305")
+    assert m.confidence == d.confidence and m.model_inputs == params_by_class["Standard"]
+
+
 def test_personal_cannot_encrypt_high_critical(qapp, model, params_by_class, tmp_path, host):
     page, vault, *_ = _upload_setup(qapp, model, tmp_path, host, "x", params_by_class["High/Critical"], "Personal")
     page.run_prediction()
@@ -183,7 +204,7 @@ def test_dropdowns_exist_only_on_upload_page_and_persist(qapp, tmp_path, model):
     cfg = ConfigManager(tmp_path / "settings.json")
     cfg.update(username="u", account_type="Enterprise", default_directory=str(tmp_path),
                vault_directory=str(tmp_path / "DEDV"))
-    win = MainWindow(cfg)
+    win = MainWindow(cfg, new_vault(tmp_path / "DEDV"))
     bars = win.findChildren(ParameterBar)
     assert len(bars) == 1 and win.upload_page.isAncestorOf(bars[0])
     for page in (win.view_page, win.edit_page, win.settings_page, win.developer_page):
@@ -199,20 +220,35 @@ def test_dropdowns_exist_only_on_upload_page_and_persist(qapp, tmp_path, model):
     assert bar.values()["Sensitivity"] == "Very High"
     cfg2 = ConfigManager(tmp_path / "settings.json")
     assert cfg2.load()
-    win2 = MainWindow(cfg2)
+    win.close()                                                 # "restart"
+    win2 = MainWindow(cfg2, None)
     assert win2.upload_page.param_bar.values()["Sensitivity"] == "Very High"
     assert [win.stack.widget(i) for i in range(win.stack.count())] == [
         win.view_page, win.upload_page, win.edit_page, win.settings_page, win.developer_page]
 
 
 # ---- view page: double-click open ----------------------------------------------------------------------
-def _stored_vault(tmp_path, name, content, level="Standard"):
-    vault = VaultService(tmp_path / "DEDV")
+def _stored_vault(tmp_path, name, content, level="Standard", predicted=None):
+    vault = new_vault(tmp_path / "DEDV")
     src = tmp_path / name
     src.write_bytes(content)
-    d = SecurityDecision(FINAL, "Enterprise", predicted=level, level=level)
+    d = SecurityDecision(FINAL, "Enterprise", predicted=predicted or level, level=level, confidence=0.81,
+                         params={"Sensitivity": "High"}, acknowledged=True)
     assert vault.store_files([(src, d)], "Enterprise").stored == [name]
     return vault, vault.list_files()[-1]
+
+
+def test_view_page_details_show_the_recorded_decision(qapp, tmp_path):
+    vault, meta = _stored_vault(tmp_path, "note.txt", CONTENT)
+    vault.reencrypt(meta.file_id, "High", "Enterprise")
+    page = ViewPage(lambda: vault)
+    page.refresh()
+    assert "Select a file" in page.details.text()
+    page.table.selectRow(0)
+    text = page.details.text()
+    for part in ("note.txt", "Predicted: Standard", "Confidence: 81%", "Final level: High",
+                 "Override: Yes", f"Decided: {meta.date_added.replace('T', ' ')}", "Sensitivity: High"):
+        assert part in text
 
 
 def test_double_click_opens_in_memory_without_touching_encrypted_file(qapp, tmp_path, monkeypatch):
@@ -293,10 +329,153 @@ def test_viewer_handles_text_image_pdf_and_corruption(qapp):
     assert not FileViewerDialog("a.txt", "text", b"hi").error
 
 
+def test_windows_theme_follows_light_and_dark(qapp, monkeypatch):
+    from PySide6.QtCore import QFile
+    from PySide6.QtGui import QPalette, QStyleHints
+    from ui import styles
+    from ui.widgets import InfoBar
+    font, palette = qapp.font(), qapp.palette()
+    monkeypatch.setattr(styles, "_theme", styles._theme)            # restored afterwards
+    monkeypatch.setattr(styles, "_motion", False)
+    try:
+        for scheme, name in ((Qt.ColorScheme.Dark, "dark"), (Qt.ColorScheme.Light, "light")):
+            monkeypatch.setattr(QStyleHints, "colorScheme", lambda self, s=scheme: s)
+            styles.apply(qapp)
+            assert styles.color("bg") == styles.THEMES[name]["bg"]
+            assert qapp.palette().color(QPalette.Window).name() == styles.THEMES[name]["bg"]
+            arrow = f":/icons/chevron-down-{name}.png"
+            assert arrow in qapp.styleSheet() and QFile(arrow).exists()      # bundled, not a loose file
+        bar = InfoBar()
+        assert bar.isHidden()
+        bar.setText("Saved.", "success")
+        assert not bar.isHidden() and bar.text() == "Saved." and bar.severity() == "success"
+        bar.setText("")
+        assert bar.isHidden()
+    finally:
+        qapp.setStyleSheet("")
+        qapp.setFont(font)
+        qapp.setPalette(palette)
+
+
+def test_light_theme_cards_cast_a_soft_shadow(qapp, monkeypatch):
+    from PySide6.QtGui import QStyleHints
+    from ui import styles
+    from ui.widgets import card
+    font, palette = qapp.font(), qapp.palette()
+    monkeypatch.setattr(styles, "_theme", styles._theme)
+    monkeypatch.setattr(styles, "_motion", False)
+    monkeypatch.setattr(QStyleHints, "colorScheme", lambda self: Qt.ColorScheme.Light)
+    try:
+        styles.apply(qapp)
+        host = QWidget()
+        host.setAutoFillBackground(True)
+        host.resize(300, 200)
+        box, _ = card()
+        box.setParent(host)
+        box.setGeometry(50, 50, 200, 80)
+        host.show()
+        qapp.processEvents()
+        img = host.grab().toImage()
+        assert img.pixelColor(150, 133).lightness() < img.pixelColor(150, 190).lightness()   # just under the card
+    finally:
+        qapp.setStyleSheet("")
+        qapp.setFont(font)
+        qapp.setPalette(palette)
+
+
+def test_side_bar_collapses_and_animations_settle(qapp, tmp_path, monkeypatch):
+    from ui import styles
+    from ui.main_window import COMPACT_WIDTH, PANE_WIDTH
+    monkeypatch.setattr(styles, "_motion", True)           # as on a PC with Windows animation effects on
+    cfg = ConfigManager(tmp_path / "settings.json")
+    cfg.update(username="u", account_type="Enterprise", default_directory=str(tmp_path),
+               vault_directory=str(tmp_path / "DEDV"))
+    win = MainWindow(cfg, new_vault(tmp_path / "DEDV"))
+    win.resize(1280, 800)
+    win.show()
+    win.set_compact(False, animate=False)
+    win.set_compact(True)
+    assert wait_until(lambda: win.sidebar.width() == COMPACT_WIDTH, 5)
+    assert win.user_label.isHidden() and win.nav.button(1).toolTip() == "Upload"     # labels become tooltips
+    win._navigate(1)
+    page, btn = win.upload_page, win.nav.button(1)
+    assert page.graphicsEffect() is not None                             # fading in
+    assert wait_until(lambda: page.graphicsEffect() is None, 5)          # then painted directly again
+    assert page.pos().y() == 0
+    assert wait_until(lambda: win.pill.y() == btn.y() + (btn.height() - win.pill.height()) // 2, 5)
+    win.set_compact(False)
+    assert wait_until(lambda: win.sidebar.width() == PANE_WIDTH and not win.user_label.isHidden(), 5)
+    assert win.nav.button(1).toolTip() == ""
+    win.hide()                                                           # no close: keeps QSettings untouched
+
+
+def test_viewer_zoom(qapp):
+    from PySide6.QtCore import QBuffer, QIODevice, QPoint, QPointF
+    from PySide6.QtGui import QImage, QPainter, QPdfWriter, QWheelEvent
+
+    def png(w, h):
+        img = QImage(w, h, QImage.Format_RGB32)
+        img.fill(0x3366CC)
+        b = QBuffer()
+        b.open(QIODevice.WriteOnly)
+        img.save(b, "PNG")
+        return bytes(b.data())
+
+    def shown(dlg):
+        dlg.show()
+        qapp.processEvents()
+        return dlg
+
+    def ctrl_wheel(dlg, dy):
+        vp = dlg.body.viewport()
+        QApplication.sendEvent(vp, QWheelEvent(QPointF(10, 10), QPointF(vp.mapToGlobal(QPoint(10, 10))), QPoint(),
+                                               QPoint(0, dy), Qt.NoButton, Qt.ControlModifier,
+                                               Qt.NoScrollPhase, False))
+
+    dlg = shown(FileViewerDialog("big.png", "image", png(4000, 1000)))
+    vp, fit = dlg.body.viewport().size(), dlg.zoom()
+    assert fit < 1 and 4000 * fit <= vp.width() and 1000 * fit <= vp.height()     # opens showing the whole image
+    assert dlg.body.horizontalScrollBar().maximum() == 0
+    dlg.zoom_in()
+    assert dlg.zoom() == pytest.approx(fit * 1.25) and dlg.zoom_label.text() == f"{fit * 1.25:.0%}"
+    assert dlg.body.horizontalScrollBar().maximum() > 0
+    dlg.zoom_out()
+    ctrl_wheel(dlg, -120)
+    assert dlg.zoom() == pytest.approx(fit / 1.25)
+    ctrl_wheel(dlg, 120)
+    assert dlg.zoom() == pytest.approx(fit)
+    dlg.set_zoom(1.0)
+    assert dlg.zoom() == 1.0 and dlg.zoom_label.text() == "100%"
+    dlg.set_zoom(1000)
+    assert dlg.zoom() == 8.0                                                        # clamped
+    dlg.fit()
+    assert dlg.zoom() == pytest.approx(fit)
+    dlg.close()
+
+    small = shown(FileViewerDialog("small.png", "image", png(20, 20)))
+    assert small.zoom() == 1.0                                                      # fit never enlarges
+    small.close()
+
+    pdf_buf = QBuffer()
+    pdf_buf.open(QIODevice.WriteOnly)
+    writer = QPdfWriter(pdf_buf)
+    p = QPainter(writer)
+    p.drawText(100, 100, "hello")
+    p.end()
+    pdf = shown(FileViewerDialog("a.pdf", "pdf", bytes(pdf_buf.data())))
+    assert pdf.body.horizontalScrollBar().maximum() == 0                           # fits the page width
+    pdf.set_zoom(pdf.zoom() * 1.05)
+    qapp.processEvents()
+    assert pdf.body.horizontalScrollBar().maximum() > 0
+    pdf.close()
+
+    assert not hasattr(FileViewerDialog("a.txt", "text", b"hi"), "zoom_label")    # text: Ctrl+wheel built in
+
+
 # ---- edit page ------------------------------------------------------------------------------------------
-def _edit_setup(tmp_path, host, account, level="Standard"):
+def _edit_setup(tmp_path, host, account, level="Standard", predicted=None):
     win, overlay, runner = host
-    vault, meta = _stored_vault(tmp_path, "note.txt", CONTENT, level)
+    vault, meta = _stored_vault(tmp_path, "note.txt", CONTENT, level, predicted)
     page = EditPage(lambda: vault, lambda: account, runner)
     page.refresh()
     return page, vault, meta, overlay
@@ -308,8 +487,26 @@ def test_edit_page_shows_current_details_and_account_valid_targets(qapp, tmp_pat
     assert page.details["Current algorithm"].text() == "AES-256"
     targets = [page.target.itemData(i) for i in range(page.target.count())]
     assert targets == ["Low", "Enhanced"]                      # no High/Critical for Personal, not current
-    assert levels_for("Enterprise") == ("Low", "Standard", "Enhanced", "High", "Critical")
-    assert "High" not in levels_for("Personal") and "Critical" not in levels_for("Personal")
+    assert not page.target.model().item(0).isEnabled()         # Low is below the predicted Standard
+    assert "raised but not lowered" in page.target.itemData(0, Qt.ToolTipRole)
+    assert page.target.currentData() == "Enhanced" and page.button.isEnabled()
+    assert account_levels("Enterprise") == ("Low", "Standard", "Enhanced", "High", "Critical")
+    assert "High" not in account_levels("Personal") and "Critical" not in account_levels("Personal")
+
+
+def test_edit_page_enterprise_high_critical_floor(qapp, tmp_path, host):
+    page, *_ = _edit_setup(tmp_path, host, "Enterprise", level="Critical", predicted="High/Critical")
+    items = {page.target.itemData(i): page.target.model().item(i).isEnabled() for i in range(page.target.count())}
+    assert items == {"Low": False, "Standard": False, "Enhanced": False, "High": True}
+    assert page.target.currentData() == "High" and page.button.isEnabled()
+
+
+def test_edit_page_with_no_higher_level_disables_reencrypt(qapp, tmp_path, host):
+    page, *_ = _edit_setup(tmp_path, host, "Personal", level="Enhanced")
+    assert [page.target.itemData(i) for i in range(page.target.count())] == ["Low", "Standard"]
+    assert not any(page.target.model().item(i).isEnabled() for i in range(page.target.count()))
+    assert page.target.currentIndex() == -1 and not page.button.isEnabled()
+    assert "No higher security level" in page.status.text()
 
 
 def test_reencrypt_button_uses_same_overlay_and_updates_everything(qapp, tmp_path, host, no_blocking_boxes):

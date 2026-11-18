@@ -4,6 +4,10 @@ file + SecurityDecision -> EncryptionService -> KeyManagementService -> encrypte
 The level is decided beforehand by SecurityDecisionEngine; the level in the decision is the level
 that is actually used for encryption. Operations that change the vault take a lock so a store and a
 re-encryption can never interleave.
+
+Authorization: the vault must be unlocked (self.session, see auth_service). Every decryption goes
+through KeyManagementService.release_key(), which refuses while the vault is locked and writes an
+audit entry either way. Stores, reads, external opens and re-encryptions are also logged.
 """
 import dataclasses
 import threading
@@ -12,11 +16,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from models.file_metadata import FileMetadata
-from services.encryption_service import LEGACY_ALGORITHM, EncryptionError, EncryptionService
+from paths import restrict_permissions
+from services import migration_service
+from services.audit_service import FAILED, OK, AuditLog
+from services.auth_service import AuthError, AuthSession
+from services.encryption_service import EncryptionError, EncryptionService
 from services.key_management_service import KeyManagementService, KeyStoreError
-from services.security_decision_service import SecurityDecision, validate_final_level
-from services.storage_service import (JsonVaultRepository, StorageError,
+from services.session_service import SessionStore
+from services.security_decision_service import (SecurityDecision, floor_level, is_override,
+                                                validate_final_level, validate_not_below)
+from services.storage_service import (SqliteVaultRepository, StorageError, VaultDb, VaultLock,
                                       VaultRepository, create_vault)
+
+LOCKED_MESSAGE = "The vault is locked."
 
 
 class OperationError(Exception):
@@ -31,13 +43,67 @@ class StoreResult:
 
 
 class VaultService:
-    def __init__(self, vault_dir: Path, keys: KeyManagementService | None = None):
+    """After construction the vault is in one of three states:
+      * needs_migration        - written by DEDV 0.1; call migrate(password) first
+      * not session.is_initialized - new vault; call session.initialize(password)
+      * otherwise              - call session.unlock(password)
+    """
+
+    def __init__(self, vault_dir: Path):
         self.vault_dir = Path(vault_dir)
         create_vault(self.vault_dir.parent)           # ensures folders exist
-        self.repo: VaultRepository = JsonVaultRepository(self.vault_dir)
+        self._vault_lock = VaultLock(self.vault_dir)  # one DEDV process per vault
+        # Owner-only folder: other Windows users cannot open the vault. Best effort (not possible on
+        # FAT32/exFAT drives; an administrator can still take ownership).
+        restrict_permissions(self.vault_dir)
         self.encryption = EncryptionService()
-        self.keys = keys or KeyManagementService(self.vault_dir)
         self._op_lock = threading.Lock()
+        self.db: VaultDb | None = None
+        self.repo: VaultRepository | None = None
+        self.audit: AuditLog | None = None
+        self.session: AuthSession | None = None
+        self.keys: KeyManagementService | None = None
+        try:
+            if not migration_service.needs_migration(self.vault_dir):
+                self._open()
+        except Exception:
+            self._vault_lock.release()
+            raise
+
+    def _open(self) -> None:
+        self.db = VaultDb(self.vault_dir)
+        self.repo = SqliteVaultRepository(self.db)
+        self.audit = AuditLog(self.db)
+        self.session = AuthSession(self.db, self.audit, SessionStore(self.db, self.audit, self.vault_dir))
+        self.keys = KeyManagementService(self.db, self.audit)
+
+    @property
+    def needs_migration(self) -> bool:
+        return self.db is None
+
+    def migrate(self, password: str, allow_unverified: bool = False) -> migration_service.MigrationResult:
+        """Upgrade a DEDV 0.1 vault (see migration_service) and leave it unlocked."""
+        result = migration_service.migrate(self.vault_dir, password, allow_unverified)
+        self._open()
+        self.session.unlock(password)
+        return result
+
+    def lock(self, end_session: bool = False) -> None:
+        """Forget the VMK. end_session=True also ends the Windows sign-in session (Lock button,
+        idle auto-lock); closing DEDV keeps it."""
+        if self.session is not None:
+            self.session.lock(end_session)
+
+    def close(self) -> None:
+        """Lock, close the databases and release the cross-process lock. Safe to call twice."""
+        if self.db is not None:
+            try:
+                self.lock()
+            except StorageError:
+                pass
+            self.db.close()
+            self.db = None
+        self._vault_lock.release()
 
     @property
     def encrypted_dir(self) -> Path:
@@ -52,10 +118,8 @@ class VaultService:
         The source file is only read, never modified."""
         result = StoreResult([], [])
         with self._op_lock:
-            try:
-                self.keys.check_ready()          # fail before any work if the DEDV key is unusable
-            except KeyStoreError as e:
-                result.failed.extend((Path(p).name, str(e)) for p, _ in items)
+            if not self.session.is_unlocked:     # fail before any work
+                result.failed.extend((Path(p).name, LOCKED_MESSAGE) for p, _ in items)
                 return result
             for p, decision in items:
                 p = Path(p)
@@ -64,7 +128,7 @@ class VaultService:
                     result.stored.append(p.name)
                 except PermissionError:
                     result.failed.append((p.name, "Permission denied."))
-                except (OperationError, EncryptionError, KeyStoreError, StorageError, ValueError) as e:
+                except (OperationError, EncryptionError, KeyStoreError, StorageError, AuthError, ValueError) as e:
                     result.failed.append((p.name, str(e)))
                 except OSError as e:
                     result.failed.append((p.name, str(e.strerror or e)))
@@ -75,33 +139,37 @@ class VaultService:
             raise OperationError("File not found.")
         if not decision.is_final:
             raise OperationError(decision.message or "No final security level.")
+        if decision.needs_ack and not decision.acknowledged:
+            raise OperationError("This prediction needs review. Acknowledge it before encrypting.")
         validate_final_level(account_type, decision.level)       # re-checked outside the UI
+        validate_not_below(decision.predicted, decision.level)
         file_id = uuid.uuid4().hex
         enc_name = f"{file_id}.enc"
         dest = self.encrypted_dir / enc_name
         enc = self.encryption.encrypt_file(p, dest, decision.level)
         try:
-            self.keys.store_secrets(file_id, enc.secrets)
-            self.repo.add_file(FileMetadata.new(
-                p.name, (p.suffix.lstrip(".") or "file").upper(), p.stat().st_size,
-                decision.level, enc_name, file_id, decision.predicted or "",
-                enc.algorithm, file_id, enc.params))
+            with self.db:                        # key, metadata and audit row: all or nothing
+                token = self.keys.store_key(file_id, enc.algorithm, decision.level,
+                                            enc.secrets, enc.params, self.session)
+                self.repo.add_file(FileMetadata.new(
+                    p.name, (p.suffix.lstrip(".") or "file").upper(), p.stat().st_size,
+                    decision.level, enc_name, file_id, decision.predicted or "", enc.algorithm, token,
+                    decision.confidence, decision.override, decision.params))
+                self.audit.append("store", OK, file_id, decision.level)
         except Exception:
-            dest.unlink(missing_ok=True)         # no file, key or metadata is left half-written
-            self.keys.delete(file_id)
+            dest.unlink(missing_ok=True)         # no ciphertext is left without its key and metadata
             raise
 
     # ---- open ----------------------------------------------------------------------------------
-    def _secrets_for(self, meta: FileMetadata) -> tuple[str, dict]:
-        if not meta.algorithm:       # stored before algorithm ids: plaintext key in dev_keys.json
-            return LEGACY_ALGORITHM, {"key": self.keys.get_legacy_key(meta.file_id)}
-        return meta.algorithm, self.keys.get_secrets(meta.key_ref or meta.file_id)
-
-    def _decrypt(self, meta: FileMetadata) -> bytes:
+    def _decrypt(self, meta: FileMetadata, purpose: str) -> bytes:
+        """Must not be called inside a `with self.db` block: release_key's audit entry has to be
+        committed even when the surrounding operation fails."""
         try:
-            algorithm, secrets = self._secrets_for(meta)
+            key = self.keys.release_key(meta.token, meta.file_id, self.session, purpose)
+            if (key.algorithm, key.level) != (meta.algorithm, meta.security_level):
+                raise OperationError("This file's metadata does not match its key record.")
             return self.encryption.decrypt_bytes(self.encrypted_dir / meta.encrypted_name,
-                                                 algorithm, meta.enc_params, secrets)
+                                                 key.algorithm, key.params, key.secrets)
         except (EncryptionError, KeyStoreError) as e:
             raise OperationError(str(e))
 
@@ -110,16 +178,29 @@ class VaultService:
         meta = self.repo.get_file(file_id)
         if meta is None:
             raise OperationError("This file is no longer in the vault index.")
-        return meta, self._decrypt(meta)
+        try:
+            data = self._decrypt(meta, "read")
+        except OperationError as e:
+            self.audit.append("read", FAILED, file_id, meta.security_level, str(e))
+            raise
+        self.audit.append("read", OK, file_id, meta.security_level)
+        return meta, data
+
+    def log_external_open(self, file_id: str) -> None:
+        """Record that a decrypted copy was handed to another program."""
+        meta = self.repo.get_file(file_id)
+        self.audit.append("open_external", OK, file_id, meta.security_level if meta else "")
 
     # ---- re-encrypt ----------------------------------------------------------------------------
     def reencrypt(self, file_id: str, new_level: str, account_type: str) -> FileMetadata:
         """Decrypt in memory, encrypt with the algorithm of `new_level`, then switch metadata.
 
         Order is chosen so a failure at any point leaves the original file, key and metadata
-        intact: new ciphertext and new key are written under NEW names, verified by decrypting,
-        and only then does the atomic metadata update make them current. The old ciphertext and
-        key are removed last (best effort; leftovers are harmless orphans)."""
+        intact: the new ciphertext is written under a NEW name and verified by decrypting it.
+        Then one database transaction stores the new key record, switches the metadata to the new
+        ciphertext and token, and removes the old key record; it commits or rolls back as a whole.
+        The old ciphertext is deleted only after the commit (best effort; a leftover is a harmless
+        orphan)."""
         try:
             validate_final_level(account_type, new_level)
         except ValueError as e:
@@ -128,49 +209,47 @@ class VaultService:
             meta = self.repo.get_file(file_id)
             if meta is None:
                 raise OperationError("This file is no longer in the vault index.")
-            if meta.security_level == new_level and meta.algorithm:
+            if meta.security_level == new_level:
                 raise OperationError(f"The file is already at security level {new_level}.")
+            # Never below the stored prediction; files upgraded without one keep their current level.
             try:
-                self.keys.check_ready()
-            except KeyStoreError as e:
+                validate_not_below(meta.predicted_level, new_level,
+                                   floor_level(meta.predicted_level) or meta.security_level)
+            except ValueError as e:
                 raise OperationError(str(e))
-            plaintext = self._decrypt(meta)
-
-            tag = uuid.uuid4().hex[:8]
-            new_ref = f"{file_id}.{tag}"
-            new_name = f"{file_id}.{tag}.enc"
+            change = f"{meta.security_level} -> {new_level}"
+            new_name = f"{file_id}.{uuid.uuid4().hex[:8]}.enc"
             new_path = self.encrypted_dir / new_name
             try:
-                enc = self.encryption.encrypt_data(plaintext, new_path, new_level)
-                if self.encryption.decrypt_bytes(new_path, enc.algorithm, enc.params, enc.secrets) != plaintext:
-                    raise OperationError("Verification of the new encryption failed.")
-                self.keys.store_secrets(new_ref, enc.secrets)
-                new_meta = dataclasses.replace(
-                    meta, security_level=new_level, algorithm=enc.algorithm, key_ref=new_ref,
-                    enc_params=enc.params, encrypted_name=new_name)
-                self.repo.update_file(new_meta)
-            except (OperationError, EncryptionError, KeyStoreError, StorageError, OSError) as e:
+                plaintext = self._decrypt(meta, "reencrypt")
+                try:
+                    enc = self.encryption.encrypt_data(plaintext, new_path, new_level)
+                    if self.encryption.decrypt_bytes(new_path, enc.algorithm, enc.params, enc.secrets) != plaintext:
+                        raise OperationError("Verification of the new encryption failed.")
+                    with self.db:                    # the swap: all of it or none
+                        token = self.keys.store_key(file_id, enc.algorithm, new_level,
+                                                    enc.secrets, enc.params, self.session)
+                        new_meta = dataclasses.replace(
+                            meta, security_level=new_level, algorithm=enc.algorithm, token=token,
+                            encrypted_name=new_name,
+                            override=is_override(meta.predicted_level, new_level))
+                        self.repo.update_file(new_meta)
+                        self.keys.delete(meta.token)
+                        self.audit.append("reencrypt", OK, file_id, new_level, change)
+                finally:
+                    del plaintext
+            except Exception as e:
                 new_path.unlink(missing_ok=True)
-                self.keys.delete(new_ref)
+                self.audit.append("reencrypt", FAILED, file_id, meta.security_level,
+                                  f"{change}: {type(e).__name__}")
                 if isinstance(e, OperationError):
                     raise
-                raise OperationError(f"Re-encryption failed; the original file is unchanged. "
-                                     f"{getattr(e, 'strerror', None) or e}")
-            except Exception:
-                new_path.unlink(missing_ok=True)
-                self.keys.delete(new_ref)
+                if isinstance(e, (EncryptionError, KeyStoreError, StorageError, AuthError, OSError)):
+                    raise OperationError(f"Re-encryption failed; the original file is unchanged. "
+                                         f"{getattr(e, 'strerror', None) or e}")
                 raise
-            finally:
-                del plaintext
-            self._discard_old(meta)
+            try:
+                (self.encrypted_dir / meta.encrypted_name).unlink(missing_ok=True)
+            except OSError:
+                pass     # orphaned old ciphertext; the new version is already current
             return new_meta
-
-    def _discard_old(self, old: FileMetadata) -> None:
-        try:
-            (self.encrypted_dir / old.encrypted_name).unlink(missing_ok=True)
-            if old.algorithm:
-                self.keys.delete(old.key_ref or old.file_id)
-            else:
-                self.keys.delete_legacy_key(old.file_id)
-        except (OSError, KeyStoreError):
-            pass     # orphaned old ciphertext/key; the new version is already current

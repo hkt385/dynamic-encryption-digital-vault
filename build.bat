@@ -23,8 +23,8 @@ if errorlevel 1 (
 )
 echo Application built: dist\DEDV\DEDV.exe
 
-rem --- Safety check: no key/secret files may end up in the package ---
-python -c "import sys,pathlib; bad=[str(p) for p in pathlib.Path('dist').rglob('*') if p.name.lower() in ('dedv_key.txt','wrapped_keys.json','dev_keys.json','settings.json')]; print('SECRET FILES IN PACKAGE:', bad) if bad else print('Package check OK: no key or settings files bundled.'); sys.exit(1 if bad else 0)"
+rem --- Safety check: no key, settings or vault database files may end up in the package ---
+python -c "import sys,pathlib; bad=[str(p) for p in pathlib.Path('dist').rglob('*') if p.name.lower() in ('dedv_key.txt','wrapped_keys.json','dev_keys.json','settings.json','keys.db','vault.db','files.json')]; print('SECRET FILES IN PACKAGE:', bad) if bad else print('Package check OK: no key, settings or vault files bundled.'); sys.exit(1 if bad else 0)"
 if errorlevel 1 exit /b 1
 
 rem --- Inno Setup (optional: skipped with a notice if not installed) ---

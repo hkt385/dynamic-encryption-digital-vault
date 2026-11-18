@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QLa
 
 from config.config_manager import ACCOUNT_TYPES
 from services.storage_service import StorageError, create_vault
+from ui import backdrop
 
 
 class SetupDialog(QDialog):
@@ -12,6 +13,7 @@ class SetupDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        backdrop.prepare(self)                 # Mica (main window) / Acrylic (dialog)
         self.setWindowTitle("Welcome to DEDV")
         self.setMinimumWidth(480)
         self.result: dict | None = None
@@ -24,38 +26,40 @@ class SetupDialog(QDialog):
         self.account.addItems(ACCOUNT_TYPES)
         self.directory = QLineEdit()
         self.directory.setReadOnly(True)
-        self.directory.setPlaceholderText("Select Vault Location")
-        choose = QPushButton("Choose Directory")
+        self.directory.setPlaceholderText("No folder chosen")
+        choose = QPushButton("Choose folder")
         choose.clicked.connect(self._choose)
         row = QHBoxLayout()
         row.addWidget(self.directory, 1)
         row.addWidget(choose)
-        self.go = QPushButton("Create Vault")
+        self.go = QPushButton("Create vault")
         self.go.setObjectName("primary")
+        self.go.setMinimumWidth(120)
         self.go.clicked.connect(self._finish)
         hint = QLabel("A folder named DEDV will be created inside the location you choose.")
-        hint.setObjectName("muted")
+        hint.setObjectName("caption")
         hint.setWordWrap(True)
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        bottom.addWidget(self.go)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
         lay.addWidget(title)
-        for text, w in (("User Name", self.name), ("Account Type", self.account)):
-            l = QLabel(text)
-            l.setObjectName("muted")
-            lay.addWidget(l)
+        lay.addSpacing(8)
+        for text, w in (("User name", self.name), ("Account type", self.account)):
+            lay.addWidget(QLabel(text))
             lay.addWidget(w)
-        l = QLabel("Vault Location")
-        l.setObjectName("muted")
-        lay.addWidget(l)
+            lay.addSpacing(6)
+        lay.addWidget(QLabel("Vault location"))
         lay.addLayout(row)
         lay.addWidget(hint)
-        lay.addSpacing(8)
-        lay.addWidget(self.go)
+        lay.addSpacing(12)
+        lay.addLayout(bottom)
 
     def _choose(self):
-        d = QFileDialog.getExistingDirectory(self, "Select Vault Location")
+        d = QFileDialog.getExistingDirectory(self, "Choose the vault location")
         if d:
             self.directory.setText(str(Path(d)))
 
