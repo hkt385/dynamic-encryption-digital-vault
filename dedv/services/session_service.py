@@ -13,6 +13,7 @@ import ctypes
 import hashlib
 import os
 import platform
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -117,7 +118,7 @@ class SessionStore:
                 self.cache_path.write_bytes(blob)       # a failure rolls the row back
                 self.audit.append("session_start", OK)
         except (OSError, ValueError) as e:
-            self.cache_path.unlink(missing_ok=True)
+            self._drop_cache()
             self.audit.append("session_start", FAILED, detail=type(e).__name__)
 
     def resume(self) -> bytes | None:
@@ -149,7 +150,7 @@ class SessionStore:
         with self.db as conn:                            # a refused session is gone for good
             if row is not None:
                 conn.execute("DELETE FROM keys.sessions WHERE host=? AND session_id=?", (row["host"], session_id))
-            self.cache_path.unlink(missing_ok=True)
+            self._drop_cache()
             self.audit.append("session_resume", DENIED, detail=reason)
         return None
 
@@ -163,12 +164,16 @@ class SessionStore:
 
     def _delete(self, sql: str, args: tuple, reason: str) -> None:
         with self.db as conn:
-            removed = conn.execute(sql, args).rowcount > 0
-            if self.cache_path.exists():
-                self.cache_path.unlink()
-                removed = True
+            removed = conn.execute(sql, args).rowcount > 0 or self.cache_path.exists()
+            self._drop_cache()
             if removed:
                 self.audit.append("session_end", OK, detail=reason)
+
+    def _drop_cache(self) -> None:
+        """Delete the cache file if Windows lets us. One it refuses (read-only, held open by a scanner)
+        opens nothing: the keys.sessions row is what keeps a session alive, and that is always deleted."""
+        with suppress(OSError):
+            self.cache_path.unlink(missing_ok=True)
 
 
 def register_notifications(hwnd: int) -> bool:
