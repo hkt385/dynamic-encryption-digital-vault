@@ -69,6 +69,6 @@ def test_selftest_runs_the_full_vault_flow(tmp_path, monkeypatch):
     result = json.loads(out.read_text())
     flow = result["vault_flow"]
     assert set(flow["checks"]) == {"unlock", "store_every_level", "read_back", "reencrypt",
-                                   "locked_refuses_key", "audit_chain"}
+                                   "locked_refuses_key", "audit_chain", "session"}
     assert all(flow["checks"].values()) and len(set(flow["algorithms"].values())) == 5
     assert PASSWORD not in out.read_text()

@@ -1,4 +1,4 @@
-# DEDV Developer Instructions (version 0.2.0)
+# DEDV Developer Instructions (version 0.3.0)
 
 This document describes what is **actually implemented** in this repository, where data lives, and what
 is not done. It is shown in the app (Developer page) and lives at `docs/DEVELOPER_INSTRUCTIONS.md`.
@@ -27,7 +27,8 @@ Status words: **Verified** = covered by an automated test or a recorded manual r
 |---|---|
 | `vault_service.VaultService` | Facade: `store_files`, `read_file`, `reencrypt`, `migrate`, `lock`, `close`. Re-checks every rule the UI applies |
 | `security_decision_service` | Prediction + account rules + upward-only override (`SecurityDecision.raise_level`, `needs_ack`, `override`) |
-| `auth_service.AuthSession` | Password, recovery key, Argon2id, lock/unlock, failed-attempt delay |
+| `auth_service.AuthSession` | Password, recovery key, Argon2id, lock/unlock, failed-attempt delay, `resume()` from a session |
+| `session_service` | Sessions bound to the Windows sign-in (`SessionStore`), and every Windows API call they need |
 | `key_management_service.KeyManagementService` | Per-file key records; `release_key()` is the **only** way to get a file key |
 | `audit_service.AuditLog` | Hash-chained audit log; `verify()` |
 | `storage_service` | `VaultDb` (one SQLite connection, `keys.db` attached), `SqliteVaultRepository`, `VaultLock`, schema steps |
@@ -68,8 +69,25 @@ key. **Never describe Critical as "quantum-resistant".**
 * Failed unlocks: 3 free attempts, then 2, 4, 8 … s, capped at 5 min, persisted in `keys.unlock_state`. Nothing is
   ever deleted because of failed attempts.
 * Auto-lock after idle time (default 10 min, Settings), Lock vault button (side bar). Locking erases the VMK, closes viewers and
-  dialogs, removes temporary copies and asks for the password again.
+  dialogs, removes temporary copies, **ends the session** (below) and asks for the password again.
 * One DEDV process per vault: `config\vault.lock` held with an OS lock (`msvcrt.locking`).
+
+### Sessions (Windows sign-in)
+
+* Every password unlock (also first password, upgrade, recovery reset) starts a **session** for the current Windows
+  sign-in: a random 256-bit session key wraps the VMK with AES-256-GCM in `keys.sessions` (one row per computer,
+  schema step 2). The session key is kept in `%LOCALAPPDATA%\DEDV\sessions\<hash of the vault path>.bin`
+  (16-byte session id + the key encrypted with `CryptProtectMemory(CRYPTPROTECTMEMORY_SAME_LOGON)`). Windows
+  discards that encryption key at every restart and only the same sign-in can decrypt it; the AAD names the session
+  id, the logon ID (`TokenStatistics.AuthenticationId`) and the computer.
+* While the session lives, `open_vault()` opens the vault without the password (`AuthSession.resume()`), also after
+  closing and restarting DEDV.
+* Windows lock screen (Win+L): the main window registers for `WM_WTSSESSION_CHANGE`. Lock = the vault locks as
+  above but the session stays; unlock = the session is resumed, or the password is asked if it has ended.
+* Ended by: Lock button, idle auto-lock, password change or reset (all sessions), Windows sign-out or restart
+  (the cache can no longer be decrypted; refused and deleted on the next try). Refusals are audited with a reason.
+* Vault folder: when a vault is opened, its folder is restricted to the current Windows user (`icacls`, inheritance
+  removed, Administrators and SYSTEM removed), so other Windows users cannot open it even with the password.
 
 ### Decision flow (Upload) and upward-only override
 
@@ -91,7 +109,8 @@ key. **Never describe Critical as "quantum-resistant".**
 
 `audit_log` table in `vault.db`: UTC time, action, file id, level, result, detail, `prev_hash`, `hash` where
 `hash = SHA-256(prev_hash ‖ canonical row JSON)`. Logged: unlock (OK/FAILED), lock, password set/change,
-recovery use, store, read, open externally, re-encrypt, key release, migration. Never logs plaintext, keys or
+recovery use, session start/resume/end (resume DENIED with a reason), store, read, open externally, re-encrypt,
+key release, migration. Never logs plaintext, keys or
 passwords. Developer page: *Verify audit log*. **Limit:** the chain is unkeyed; someone who can write `vault.db`
 can rebuild it.
 
@@ -108,7 +127,8 @@ untouched; a failure in step 4 leaves a harmless orphan.
 |---|---|---|---|
 | Encrypted files | Ciphertext (`<id>.enc`; after re-encryption `<id>.<tag>.enc`) | `<vault>\encrypted_files\`, `<vault>` = `<chosen folder>\DEDV` | Yes (ciphertext) |
 | Metadata + audit | File name/type/size/date, predicted/final level, confidence, override, 7 inputs, algorithm, token; audit log | `<vault>\metadata\vault.db` (SQLite, WAL) | File names and inputs may be sensitive |
-| Keys | Wrapped VMK (password and recovery slots, Argon2id parameters, salt), sealed per-file key records, failed-unlock state | `<vault>\config\keys.db` | Useless without the password or recovery key; **back it up with the vault** |
+| Keys | Wrapped VMK (password and recovery slots, Argon2id parameters, salt), sealed per-file key records, failed-unlock state, session rows (VMK wrapped under a session key) | `<vault>\config\keys.db` | Useless without the password, the recovery key or a live session; **back it up with the vault** |
+| Session cache | Session id + session key encrypted for the current Windows sign-in (until restart) | `%LOCALAPPDATA%\DEDV\sessions\<hash>.bin` (env `DEDV_SESSION_DIR`) | Opens the vault for this sign-in only; deleted on Lock / when refused |
 | Lock file | Empty; held locked while a DEDV process has the vault open | `<vault>\config\vault.lock` | No |
 | Upgrade backup | Copy of a 0.1 vault's JSON index and wrapped-key store before the upgrade (the plaintext `dev_keys.json` copy is wiped after a full upgrade) | `<vault>\backup\pre-0.2-<UTC time>\` | The old `wrapped_keys.json` is protected only by the old key file |
 | Settings | username, account type, directories, `model_parameters`, `auto_lock_minutes` | `%APPDATA%\DEDV\settings.json` | No keys |
@@ -134,6 +154,8 @@ or copy-on-write file systems, or with backup/sync tools.
 | Audit log incl. tamper detection | **Verified** (`test_audit.py`) |
 | Upgrade of a 0.1 vault incl. forced mid-way failure and partial upgrade | **Verified** (`test_migration.py`, `test_ui_auth.py`; legacy vaults written by `tests/legacy.py`, cross-checked against the 0.1 code) |
 | Lock button, auto-lock, unlock dialog | **Verified** offscreen (`test_ui_auth.py`) |
+| Sessions bound to the Windows sign-in: resume, end, refusal after another sign-in / restart / tampering, Win+L lock and unlock | **Verified** (`test_sessions.py` with the real Windows calls; sign-out and restart simulated; `test_ui_auth.py` offscreen). Real Win+L **Implemented, not verified** by a test |
+| Owner-only vault folder | **Verified** (`test_sessions.py`, real `icacls` on a temporary folder) |
 | Temporary-copy wipe, in-use skip, periodic sweep | **Verified** (`test_hardening.py`) |
 | `--selftest` full vault flow | **Verified** from source and from the frozen build (section E) |
 | Several users / roles | **Not done** (one password per vault; Personal/Enterprise is a setting, not access control) |
@@ -145,6 +167,11 @@ or copy-on-write file systems, or with backup/sync tools.
 ## D. Not done / caveats
 
 * **Single user.** Whoever knows the password (or holds the recovery key) can read everything in the vault.
+* **Sessions:** while a session lives, anyone using your signed-in, unlocked Windows account opens the vault
+  without the password. Running DEDV once elevated ("Run as administrator") and once normally counts as two
+  different sign-ins (the password is asked again).
+* **Owner-only folder:** an administrator can still take ownership of the vault folder; FAT32/exFAT drives have
+  no permissions, so the restriction is skipped there.
 * **Lost password and lost recovery key = lost data.** Nothing can recover the VMK.
 * **Best effort only:** zeroing the VMK in memory (Python may keep copies) and wiping temporary copies (see B).
 * **Unkeyed audit chain** (see A).
@@ -173,7 +200,8 @@ Output: `dist\DEDV\DEDV.exe` and, with Inno Setup, `installer\DEDV_Setup.exe` (e
 skipped).
 
 Self-test (no UI; exit code 0 = everything passed). It loads the model, then creates a temporary vault, sets the
-password, locks and unlocks, stores one file per level, reads them back, re-encrypts one, locks, checks that
+password, locks, resumes and then ends the Windows sign-in session (in a temporary session folder), unlocks with
+the password, stores one file per level, reads them back, re-encrypts one, locks, checks that
 `release_key` refuses while locked and verifies the audit chain. The password is read **only** from the
 environment variable `DEDV_SELFTEST_PASSWORD` (at least 12 characters), never from the command line:
 

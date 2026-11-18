@@ -12,8 +12,10 @@ from ui.unlock_dialog import open_vault
 
 
 def _selftest_vault(password: str) -> dict:
-    """Full flow in a temporary vault: create password -> lock -> unlock -> store one file per
-    level -> read back -> re-encrypt -> lock -> release_key refuses -> audit chain verifies."""
+    """Full flow in a temporary vault: create password -> lock -> resume the Windows sign-in
+    session -> end it (resume refused) -> unlock -> store one file per level -> read back ->
+    re-encrypt -> lock -> release_key refuses -> audit chain verifies."""
+    import os
     import tempfile
     from services.key_management_service import KeyStoreError
     from services.security_decision_service import (ENTERPRISE, ENTERPRISE_FINAL_LEVELS, FINAL,
@@ -21,11 +23,16 @@ def _selftest_vault(password: str) -> dict:
     from services.storage_service import create_vault
     from services.vault_service import VaultService
     checks, data = {}, b"DEDV selftest " * 100
+    previous_sessions = os.environ.get("DEDV_SESSION_DIR")
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        os.environ["DEDV_SESSION_DIR"] = str(Path(tmp) / "sessions")   # never the user's own cache
         vault = VaultService(create_vault(Path(tmp)))
         try:
             vault.session.initialize(password)
             vault.lock()
+            resumed = vault.session.resume()
+            vault.lock(end_session=True)
+            checks["session"] = resumed and not vault.session.resume()
             vault.session.unlock(password)
             checks["unlock"] = vault.session.is_unlocked
             items = []
@@ -56,6 +63,10 @@ def _selftest_vault(password: str) -> dict:
                     "audit_rows": rows}
         finally:
             vault.close()            # releases the lock file so the folder can be removed
+            if previous_sessions is None:
+                os.environ.pop("DEDV_SESSION_DIR", None)
+            else:
+                os.environ["DEDV_SESSION_DIR"] = previous_sessions
 
 
 def selftest(out_path: str, vault_dir: str | None = None) -> int:
