@@ -1,5 +1,6 @@
 """Sessions bound to the Windows sign-in (session_service) and the owner-only vault folder."""
 import os
+import stat
 
 import pytest
 
@@ -135,6 +136,49 @@ def test_no_secret_in_clear(vault):
 def test_schema_step_2(vault):
     with vault.db as conn:
         assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 2
+
+
+# ---- a cache file Windows will not delete -----------------------------------------------------------
+@pytest.fixture
+def read_only():
+    """Marks a file read-only, as a backup or sync tool might: Windows then refuses to delete it."""
+    marked = []
+
+    def mark(path):
+        os.chmod(path, stat.S_IREAD)
+        marked.append(path)
+    yield mark
+    for path in marked:
+        if path.exists():
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_lock_still_locks_when_the_cache_file_cannot_be_deleted(vault, read_only):
+    from conftest import PASSWORD
+    read_only(store(vault).cache_path)
+    vault.lock(end_session=True)
+    assert not vault.session.is_unlocked
+    assert rows(vault) == [] and vault.session.resume() is False    # the file left behind opens nothing
+    vault.session.unlock(PASSWORD)
+    assert vault.session.is_unlocked
+
+
+def test_open_asks_for_the_password_when_a_bad_cache_file_cannot_be_deleted(vault, read_only):
+    s = store(vault)
+    s.cache_path.write_bytes(b"garbage")
+    read_only(s.cache_path)
+    assert s.resume() is None
+    last = last_audit(vault)
+    assert (last["action"], last["result"]) == ("session_resume", "DENIED")
+
+
+def test_password_change_ends_sessions_when_the_cache_file_cannot_be_deleted(vault, read_only):
+    from conftest import PASSWORD
+    with vault.db as conn:
+        conn.execute("INSERT INTO keys.sessions VALUES ('OTHER-PC', 'x', 'y', 'z', x'00', x'00')")
+    read_only(store(vault).cache_path)
+    vault.session.change_password(PASSWORD, "another long password")
+    assert rows(vault) == []
 
 
 # ---- AuthSession / VaultService ---------------------------------------------------------------------
