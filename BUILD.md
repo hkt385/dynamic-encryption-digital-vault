@@ -66,7 +66,7 @@ works against the installed `DEDV.exe`. Details: `docs/DEVELOPER_INSTRUCTIONS.md
 | What | Where |
 |---|---|
 | Model (read-only) | `model/final_model.joblib` -> `<install>\_internal\model\` |
-| Model documentation | `CONTEXT_PROMPT.md` (development only, not bundled) |
+| Model training notes | Kept with the model's training project (not in this repository) |
 | Vault | `<chosen folder>\DEDV\` (`encrypted_files\`, `metadata\vault.db`, `config\keys.db`) |
 | Settings incl. dropdown selections | `%APPDATA%\DEDV\settings.json` (outside the install dir) |
 | Window geometry | Windows registry via `QSettings("DEDV", "DEDV")` |
