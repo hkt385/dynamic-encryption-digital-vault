@@ -41,7 +41,7 @@ def test_two_database_files_keep_keys_apart_from_metadata(tmp_path):
     tables = lambda p: {r[0] for r in sqlite3.connect(tmp_path / p).execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"files", "audit_log", "schema_version"} <= tables(VAULT_DB)
-    assert tables(KEYS_DB) == {"wrapped_keys", "vault_keys", "unlock_state"}
+    assert tables(KEYS_DB) == {"wrapped_keys", "vault_keys", "unlock_state", "sessions"}
     assert not tables(VAULT_DB) & tables(KEYS_DB)                 # no key table beside the metadata
     columns = {r[1] for r in sqlite3.connect(tmp_path / VAULT_DB).execute("PRAGMA table_info(files)")}
     assert "token" in columns and not {"key", "key_ref", "enc_params", "secrets"} & columns
@@ -51,7 +51,7 @@ def test_schema_version_recorded_once_and_wal_enabled(tmp_path):
     VaultDb(tmp_path).close()
     db = VaultDb(tmp_path)                                    # reopening must not re-run steps
     with db as conn:
-        assert [r[0] for r in conn.execute("SELECT version FROM schema_version")] == [1]
+        assert [r[0] for r in conn.execute("SELECT version FROM schema_version")] == [1, 2]
         assert conn.execute("PRAGMA main.journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA keys.journal_mode").fetchone()[0] == "wal"
 
@@ -61,7 +61,7 @@ def test_new_schema_steps_are_applied_to_an_existing_database(tmp_path, monkeypa
     VaultDb(tmp_path).close()
     monkeypatch.setattr(ss, "MIGRATIONS", ss.MIGRATIONS + [(99, ["ALTER TABLE files ADD COLUMN extra TEXT"])])
     with VaultDb(tmp_path) as conn:
-        assert [r[0] for r in conn.execute("SELECT version FROM schema_version")] == [1, 99]
+        assert [r[0] for r in conn.execute("SELECT version FROM schema_version")] == [1, 2, 99]
         conn.execute("SELECT extra FROM files")
 
 
