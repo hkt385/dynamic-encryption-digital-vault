@@ -16,7 +16,7 @@ Status words: **Verified** = covered by an automated test or a recorded manual r
 | Look (Windows 11) | `dedv/ui/styles.py`, `dedv/ui/widgets.py`, `dedv/ui/backdrop.py`, `dedv/ui/icons_rc.py` | Follows the Windows light/dark setting (live); fixed Windows-blue accent; Segoe UI Variable + Segoe Fluent Icons. `widgets.py`: side-bar buttons, `InfoBar` messages, page header, Settings rows, light-theme card shadows (`elevate()`), page entrance (`enter()`). Drop-down chevrons are PNGs in `dedv/ui/icons/`, compiled into `icons_rc.py` (`pyside6-rcc dedv/ui/icons/icons.qrc -o dedv/ui/icons_rc.py`) |
 | Materials and motion | `dedv/ui/backdrop.py`, `styles.motion()` | Windows 11 22H2+: Mica behind the main window, Acrylic behind our dialogs (DWM; a window must call `backdrop.prepare(self)` in its constructor). `DEDV_NO_MICA=1` switches materials off. Collapsible side bar (state in QSettings `navCompact`), sliding selection pill, hover fades, page entrance, overlay fade: Fluent timings 83/167/250 ms and `cubic-bezier(0, 0, 0, 1)`; opacity and position only. Animations follow Windows "Animation effects" (off = none) and are off in tests unless a test turns them on |
 | Services | `dedv/services/` (plain Python, no HTTP API) | The UI calls `VaultService`; see the table below |
-| ML model | `model/final_model.joblib` | Loaded once by `services/ml_model_service.py`; training notes in `CONTEXT_PROMPT.md` |
+| ML model | `model/final_model.joblib` | Loaded once by `services/ml_model_service.py`; training notes are kept with the training project |
 | Encryption implementations | `encryption/aes.py`, `chacha.py`, `rsa.py`, `mlkem.py` | `ecc.py` exists but is **not mapped** to any level and not used |
 | Paths | `dedv/paths.py` | Works from source and when frozen (PyInstaller) |
 | Build / installer | `DEDV.spec`, `DEDV.iss`, `build.bat` | Section E |
@@ -177,7 +177,7 @@ or copy-on-write file systems, or with backup/sync tools.
 * **Unkeyed audit chain** (see A).
 * **Asymmetric levels:** RSA and ML-KEM private keys are stored with the wrapped key, sealed under the VMK.
 * **Model reliability:** Enhanced has 8 training records (precision/recall about 0.10); High/Critical ->
-  Low/Standard error 15.9 %. See `CONTEXT_PROMPT.md`.
+  Low/Standard error 15.9 %.
 * **Antivirus:** with Windows Defender real-time protection the first open of a newly written file costs about
   8 ms; this shows in small-file read times (`bench/README.md`).
 * **Installer** is not signed; Inno Setup must be installed to build it.

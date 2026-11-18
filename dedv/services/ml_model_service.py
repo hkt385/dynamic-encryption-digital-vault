@@ -1,6 +1,6 @@
 """Loads model/final_model.joblib once and runs inference. No UI code.
 
-Schema comes from CONTEXT_PROMPT.md (sections 3, 5, 7) and was checked against the
+Schema comes from the model's training notes and was checked against the
 fitted pipeline at load time: the 7 input columns, their valid values (read from the
 fitted encoders, so they cannot drift from the model) and the 4 class labels.
 Predictions are mapped by class NAME (`classes_`), never by numeric index.
@@ -14,7 +14,7 @@ from paths import model_path
 # The model pickle references `dedv_ml.pipeline._AsString`; dedv/dedv_ml is a shim for it.
 import dedv_ml.pipeline  # noqa: F401,E402
 
-# Order shown in the UI (CONTEXT_PROMPT.md section 7, "K7").
+# Order shown in the UI (the selected seven-input model, "K7").
 FEATURES = ("Sensitivity", "Who Should Access", "Access Frequency", "Exposure Consequence",
             "Protection Duration", "Multiple Devices", "Multiple Locations/Countries")
 ORDINAL_FEATURES = ("Sensitivity", "Access Frequency", "Exposure Consequence", "Protection Duration")
