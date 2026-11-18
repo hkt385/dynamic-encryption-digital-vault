@@ -21,7 +21,7 @@ Status words: **Verified** = covered by an automated test or a recorded manual r
 | Paths | `dedv/paths.py` | Works from source and when frozen (PyInstaller) |
 | Build / installer | `DEDV.spec`, `DEDV.iss`, `build.bat` | Section E |
 | Benchmarks | `bench/benchmark.py`, `bench/README.md`, `bench/results/` | Section G |
-| Paper | `report/` | `REPORT_CHANGES.md` explains the files |
+| Paper and report | Not in git (kept by the team) | Local `report/` folder; `REPORT_CHANGES.md` there explains the files |
 
 | Service | Responsibility |
 |---|---|
